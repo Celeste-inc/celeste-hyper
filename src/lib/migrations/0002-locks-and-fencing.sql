@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS locks (
+  resource TEXT PRIMARY KEY,
+  holder TEXT NOT NULL,
+  token INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+ALTER TABLE current_deployment ADD COLUMN token INTEGER NOT NULL DEFAULT 0;
