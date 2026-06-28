@@ -12,6 +12,7 @@ import type {
   EnvKind,
   EnvRow,
   EnvSummary,
+  K8sEvent,
   HelmInfo,
   HpaView,
   MachineToken,
@@ -91,6 +92,7 @@ export const http = {
   execToken: (name: string, pod: string, container: string) =>
     json<{ token: string; expiresAt: string }>("/services/" + encodeURIComponent(name) + "/exec/token", "POST", { pod, container }),
   pods: (name: string) => api<{ items: PodSummary[]; selector?: string; error?: string }>(`/services/${encodeURIComponent(name)}/pods`),
+  events: (name: string) => api<{ items: K8sEvent[]; error?: string }>(`/services/${encodeURIComponent(name)}/events`),
   networking: (name: string) => api<{ service: NetworkingService | null; hint?: string }>(`/services/${encodeURIComponent(name)}/networking`),
   ingressYaml: (clusterId: string, namespace: string, name: string) =>
     api<{ yaml: string }>(`/clusters/${encodeURIComponent(clusterId)}/ingresses/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`),

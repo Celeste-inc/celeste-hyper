@@ -257,6 +257,22 @@ export class K8s implements K8sLike {
     }
   }
 
+  async listEvents(namespace: string, fieldSelector?: string): Promise<K8sEvent[]> {
+    const args = ["-n", namespace, "get", "events", "-o", "json"];
+    if (fieldSelector) args.push(`--field-selector=${fieldSelector}`);
+    const r = await this.kubectl(args);
+    if (r.code !== 0) throw new Error(r.stderr || r.stdout);
+    let parsed: { items?: RawEvent[] };
+    try {
+      parsed = JSON.parse(r.stdout) as { items?: RawEvent[] };
+    } catch (e) {
+      throw new Error(`kubectl returned non-JSON: ${(e as Error).message}`);
+    }
+    return (parsed.items ?? [])
+      .map((e) => extractEvent(e))
+      .filter((e): e is K8sEvent => e !== null);
+  }
+
   async listPods(namespace: string, labelSelector?: string): Promise<ClusterPod[]> {
     const args = ["-n", namespace, "get", "pods", "-o", "json"];
     if (labelSelector) args.push("-l", labelSelector);
@@ -459,6 +475,42 @@ export interface ClusterPod {
   nodeName: string | null;
   startTime: string | null;
   containers: { name: string; image: string; ready: boolean; restartCount: number; waitingReason?: string; terminatedReason?: string }[];
+}
+
+export interface K8sEvent {
+  type: string;
+  reason: string;
+  message: string;
+  involvedObject: { kind: string; name: string };
+  firstTimestamp: string | null;
+  lastTimestamp: string | null;
+  count: number;
+}
+
+interface RawEvent {
+  type?: string;
+  reason?: string;
+  message?: string;
+  involvedObject?: { kind?: string; name?: string };
+  firstTimestamp?: string | null;
+  lastTimestamp?: string | null;
+  eventTime?: string | null;
+  count?: number;
+}
+
+function extractEvent(raw: RawEvent): K8sEvent | null {
+  const kind = raw.involvedObject?.kind;
+  const name = raw.involvedObject?.name;
+  if (!kind || !name) return null;
+  return {
+    type: raw.type ?? "Normal",
+    reason: raw.reason ?? "",
+    message: raw.message ?? "",
+    involvedObject: { kind, name },
+    firstTimestamp: raw.firstTimestamp ?? raw.eventTime ?? null,
+    lastTimestamp: raw.lastTimestamp ?? raw.eventTime ?? null,
+    count: raw.count ?? 1,
+  };
 }
 
 export interface K8sServicePort {

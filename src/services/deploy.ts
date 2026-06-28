@@ -13,7 +13,7 @@ import { runHealthGate, type HealthGateSample } from "./health-gate.ts";
 import type { ClusterPod } from "../lib/k8s.ts";
 
 const BLUE_GREEN_DRAIN_SEC = 30;
-import { pathFor } from "../lib/env-files.ts";
+import { pathFor, write as writeEnvFile } from "../lib/env-files.ts";
 import type { K8sPool } from "./k8s-pool.ts";
 import type { K8sLike } from "../lib/k8s-port.ts";
 import { type Clock, realClock } from "../lib/clock.ts";
@@ -98,6 +98,40 @@ export class Deployer {
     return this.pool.getOrThrow(service.clusterId);
   }
 
+  /**
+   * Ensure the per-service ConfigMap/Secret exist in the cluster before `apply`. If the local
+   * env file is missing, touch an empty one (so the env panel opens at the path) and upsert an
+   * empty resource — this prevents `CreateContainerConfigError` on manifests that envFrom a
+   * non-optional ref. A "[warn]" line is collected and surfaced in the deployment's success message.
+   */
+  private async syncEnv(
+    service: ServiceModel,
+    namespace: string,
+    k8s: K8sLike,
+  ): Promise<{ steps: DeployStep[]; warnings: string[]; error?: { name: string; message: string } }> {
+    const steps: DeployStep[] = [];
+    const warnings: string[] = [];
+    const kinds: { kind: "config" | "secret"; resource: string }[] = [
+      { kind: "config", resource: `${service.name}-config` },
+      { kind: "secret", resource: `${service.name}-secret` },
+    ];
+    for (const { kind, resource } of kinds) {
+      const file = pathFor(this.cfg.envFilesDir, service.name, kind);
+      let autoCreated = false;
+      if (!existsSync(file)) {
+        await writeEnvFile(this.cfg.envFilesDir, service.name, kind, "");
+        autoCreated = true;
+        warnings.push(`[warn] ${kind}.env not set — created empty ${resource}`);
+      }
+      const r = kind === "config"
+        ? await k8s.upsertConfigMapFromEnvFile(resource, file, namespace)
+        : await k8s.upsertSecretFromEnvFile(resource, file, namespace);
+      if (r.code !== 0) return { steps, warnings, error: { name: `apply-${kind}`, message: r.stderr || r.stdout } };
+      steps.push({ name: `apply-${kind}`, ok: true, message: autoCreated ? `${file} (auto-created empty)` : file });
+    }
+    return { steps, warnings };
+  }
+
   /** Commit the live tag. When a fencing token is given (P0.7 worker path), a stale token is a
    *  no-op so a zombie worker can't overwrite a newer deploy; otherwise an unfenced write. */
   private applyCurrent(name: string, tag: string, fencingToken?: number): void {
@@ -112,6 +146,7 @@ export class Deployer {
     fencingToken?: number,
   ): Promise<DeployResult> {
     const steps: DeployStep[] = [];
+    const warnings: string[] = [];
     const fail = (name: string, msg: string): DeployResult => {
       steps.push({ name, ok: false, message: msg });
       this.state.updateDeployment(id, "failed", `${name}: ${msg}`);
@@ -164,23 +199,12 @@ export class Deployer {
       ok("apply-namespace");
     }
 
+    const env = await this.syncEnv(service, service.namespace, k8s);
+    for (const s of env.steps) steps.push(s);
+    for (const w of env.warnings) warnings.push(w);
+    if (env.error) return fail(env.error.name, env.error.message);
     const configEnv = pathFor(this.cfg.envFilesDir, service.name, "config");
-    if (existsSync(configEnv)) {
-      const r = await k8s.upsertConfigMapFromEnvFile(`${service.name}-config`, configEnv, service.namespace);
-      if (r.code !== 0) return fail("apply-config", r.stderr);
-      ok("apply-config", configEnv);
-    } else {
-      log.warn("deploy.no_config", { service: service.name, expected: configEnv });
-    }
-
     const secretEnv = pathFor(this.cfg.envFilesDir, service.name, "secret");
-    if (existsSync(secretEnv)) {
-      const r = await k8s.upsertSecretFromEnvFile(`${service.name}-secret`, secretEnv, service.namespace);
-      if (r.code !== 0) return fail("apply-secret", r.stderr);
-      ok("apply-secret", secretEnv);
-    } else {
-      log.warn("deploy.no_secret", { service: service.name, expected: secretEnv });
-    }
 
     const renderedDeployment = join(k8sDir, "deployment.rendered.yaml");
     const deploymentFile = existsSync(renderedDeployment)
@@ -218,7 +242,7 @@ export class Deployer {
     }
 
     this.applyCurrent(service.name, tag, fencingToken);
-    this.state.updateDeployment(id, "done");
+    this.state.updateDeployment(id, "done", warnings.length ? warnings.join(" · ") : undefined);
     log.info("deploy.done", { service: service.name, tag });
     return { deploymentId: id, ok: true, steps };
   }
@@ -230,6 +254,7 @@ export class Deployer {
    */
   private async deployGitSync(id: number, service: GitSyncService, fencingToken?: number): Promise<DeployResult> {
     const steps: DeployStep[] = [];
+    const warnings: string[] = [];
     const fail = (name: string, msg: string): DeployResult => {
       steps.push({ name, ok: false, message: msg });
       this.state.updateDeployment(id, "failed", `${name}: ${msg}`);
@@ -281,25 +306,18 @@ export class Deployer {
     }
 
     this.state.updateDeployment(id, "applying");
-    const configEnv = pathFor(this.cfg.envFilesDir, service.name, "config");
-    if (existsSync(configEnv)) {
-      const r = await k8s.upsertConfigMapFromEnvFile(`${service.name}-config`, configEnv, service.namespace);
-      if (r.code !== 0) return fail("apply-config", r.stderr);
-      ok("apply-config", configEnv);
-    }
-    const secretEnv = pathFor(this.cfg.envFilesDir, service.name, "secret");
-    if (existsSync(secretEnv)) {
-      const r = await k8s.upsertSecretFromEnvFile(`${service.name}-secret`, secretEnv, service.namespace);
-      if (r.code !== 0) return fail("apply-secret", r.stderr);
-      ok("apply-secret", secretEnv);
-    }
+    const env = await this.syncEnv(service, service.namespace, k8s);
+    for (const s of env.steps) steps.push(s);
+    for (const w of env.warnings) warnings.push(w);
+    if (env.error) return fail(env.error.name, env.error.message);
 
     const apply = await k8s.applyFile(k8sDir, service.namespace);
     if (apply.code !== 0) return fail("apply-manifests", apply.stderr);
     ok("apply-manifests", k8sDir);
 
     this.applyCurrent(service.name, sha, fencingToken);
-    this.state.updateDeployment(id, "done", `git-sync ${service.gitRef} @ ${sha.slice(0, 12)}`);
+    const base = `git-sync ${service.gitRef} @ ${sha.slice(0, 12)}`;
+    this.state.updateDeployment(id, "done", warnings.length ? `${base} · ${warnings.join(" · ")}` : base);
     log.info("deploy.done", { service: service.name, ref: service.gitRef, sha });
     return { deploymentId: id, ok: true, steps };
   }

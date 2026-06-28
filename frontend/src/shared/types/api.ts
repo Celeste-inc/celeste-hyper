@@ -159,6 +159,8 @@ export interface ContainerSummary {
   image: string;
   ready?: boolean;
   restartCount?: number;
+  waitingReason?: string;
+  terminatedReason?: string;
 }
 
 export interface WorkloadSummary {
@@ -297,6 +299,16 @@ export interface PodSummary {
   podIP?: string;
   nodeName?: string;
   containers: ContainerSummary[];
+}
+
+export interface K8sEvent {
+  type: string;
+  reason: string;
+  message: string;
+  involvedObject: { kind: string; name: string };
+  firstTimestamp: string | null;
+  lastTimestamp: string | null;
+  count: number;
 }
 
 export interface ServicePort {

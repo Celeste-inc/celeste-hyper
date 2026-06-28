@@ -1,5 +1,5 @@
 import type { Subprocess } from "bun";
-import type { RunResult, ClusterPod, K8sServiceInfo, ClusterNode, IngressRule, ClusterWorkload } from "./k8s.ts";
+import type { RunResult, ClusterPod, K8sServiceInfo, ClusterNode, IngressRule, ClusterWorkload, K8sEvent } from "./k8s.ts";
 import type { NamespaceCounts } from "../services/namespace-counts.ts";
 import type { Hpa } from "../services/hpa.ts";
 
@@ -37,6 +37,7 @@ export interface K8sLike {
   getReadyReplicas(kind: string, name: string, namespace: string): Promise<number>;
   getWorkloadSelector(kind: string, name: string, namespace: string): Promise<string | null>;
   listPods(namespace: string, labelSelector?: string): Promise<ClusterPod[]>;
+  listEvents(namespace: string, fieldSelector?: string): Promise<K8sEvent[]>;
   getServiceInfo(name: string, namespace: string): Promise<K8sServiceInfo | null>;
   listNodes(): Promise<ClusterNode[]>;
   listIngressesFor(svcName: string, namespace: string): Promise<IngressRule[]>;

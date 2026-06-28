@@ -21,6 +21,7 @@ import { realClock, type Clock } from "../lib/clock.ts";
 export interface FakeK8s {
   getWorkloadSelector(kind: string, name: string, namespace: string): Promise<string | null>;
   listPods(namespace: string, selector?: string): Promise<unknown[]>;
+  listEvents(namespace: string, fieldSelector?: string): Promise<unknown[]>;
   getServiceInfo(name: string, namespace: string): Promise<unknown | null>;
   listNodes(): Promise<unknown[]>;
   listIngressesFor(svc: string, namespace: string): Promise<unknown[]>;
@@ -104,6 +105,7 @@ function defaultK8s(): FakeK8s {
   return {
     getWorkloadSelector: async () => null,
     listPods: async () => [],
+    listEvents: async () => [],
     getServiceInfo: async () => null,
     listNodes: async () => [],
     listIngressesFor: async () => [],

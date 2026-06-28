@@ -18,7 +18,7 @@ import {
   WrapText,
   X,
 } from "lucide-react";
-import type { AutoRollbackStatus, Deployment, Endpoint, HelmInfo, HpaView, NetworkingService, PodSummary, Service, ServiceListItem } from "../shared/types/api";
+import type { AutoRollbackStatus, Deployment, Endpoint, HelmInfo, HpaView, K8sEvent, NetworkingService, PodSummary, Service, ServiceListItem } from "../shared/types/api";
 import { http } from "../shared/api/client";
 import { apiError, fmtTs } from "../shared/utils/format";
 import { t } from "../shared/i18n/t";
@@ -44,6 +44,7 @@ export function ServiceDetail({ name, services, clusterLabel, notify, onClose, s
   const [service, setService] = useState<Service | null>(null);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [pods, setPods] = useState<PodSummary[]>([]);
+  const [events, setEvents] = useState<K8sEvent[]>([]);
   const [selector, setSelector] = useState<string>();
   const [networking, setNetworking] = useState<NetworkingService | null>(null);
   const [canRollback, setCanRollback] = useState(false);
@@ -62,11 +63,12 @@ export function ServiceDetail({ name, services, clusterLabel, notify, onClose, s
   }, [isObscured, onClose]);
 
   useEffect(() => {
-    void Promise.all([http.service(name), http.deployments(name), http.pods(name), http.networking(name), http.rollbackPreview(name)]).then(
-      ([serviceRes, depRes, podRes, netRes, rbRes]) => {
+    void Promise.all([http.service(name), http.deployments(name), http.pods(name), http.events(name), http.networking(name), http.rollbackPreview(name)]).then(
+      ([serviceRes, depRes, podRes, evRes, netRes, rbRes]) => {
         setService(serviceRes.body.service || null);
         setDeployments((depRes.body.items || []).slice(0, 8));
         setPods(podRes.body.items || []);
+        setEvents(evRes.body.items || []);
         setSelector(podRes.body.selector);
         setNetworking(netRes.body.service || null);
         setCanRollback(Boolean(rbRes.body.eligible));
@@ -81,18 +83,19 @@ export function ServiceDetail({ name, services, clusterLabel, notify, onClose, s
       <aside className="detail-sheet" role="dialog" aria-modal={!isObscured} aria-hidden={isObscured || undefined} aria-label={`${name} service details`}>
         <button className="hyper-button ghost sheet-close" type="button" aria-label={t("Close service details")} onClick={onClose}><X size={18} /></button>
         {!service ? <><h2 className="dialog-title">{name}</h2><p className="text-[var(--mut)]">{t("Loading service details...")}</p></> : (
-          <ServiceDetailContent service={service} card={card} deployments={deployments} pods={pods} selector={selector} networking={networking} clusterLabel={clusterLabel} notify={notify} openModal={openModal} canRollback={canRollback} />
+          <ServiceDetailContent service={service} card={card} deployments={deployments} pods={pods} events={events} selector={selector} networking={networking} clusterLabel={clusterLabel} notify={notify} openModal={openModal} canRollback={canRollback} />
         )}
       </aside>
     </div>
   );
 }
 
-function ServiceDetailContent({ service, card, deployments, pods, selector, networking, clusterLabel, notify, openModal, canRollback }: {
+function ServiceDetailContent({ service, card, deployments, pods, events, selector, networking, clusterLabel, notify, openModal, canRollback }: {
   service: Service;
   card?: ServiceListItem;
   deployments: Deployment[];
   pods: PodSummary[];
+  events: K8sEvent[];
   selector?: string;
   networking: NetworkingService | null;
   clusterLabel: (id: string) => string;
@@ -123,6 +126,7 @@ function ServiceDetailContent({ service, card, deployments, pods, selector, netw
       <AutoscalingPanel name={name} openModal={openModal} />
       <HelmPanel name={name} notify={notify} />
       <DetailSection title={t("Pods")}>{pods.length ? <PodsTable name={name} pods={pods} openModal={openModal} /> : <p className="text-[var(--mut)]">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}</DetailSection>
+      <DetailSection title={t("Events")}>{events.length ? <EventsTable items={events} /> : <p className="text-[var(--mut)]">{t("No recent events for pods backing this service.")}</p>}</DetailSection>
       <DetailSection title={t("Live logs")}><LogsPanel serviceName={name} pods={pods} /></DetailSection>
       <DetailSection title={t("Environment")}><EnvPanels env={env} /></DetailSection>
       <DetailSection title={t("Recent deployments")}>{deployments.length ? <DeploymentTable items={deployments} /> : <p className="text-[var(--mut)]">{t("No deployments yet.")}</p>}</DetailSection>
@@ -437,8 +441,23 @@ function NetworkingInfo({ service }: { service: NetworkingService }) {
   return <><Kv rows={[[t("Service"), <Tag>{service.name}</Tag>], [t("Type"), <Tag>{service.type}</Tag>], [t("Cluster IP"), service.clusterIP ? <Tag>{service.clusterIP}</Tag> : null], [t("External IPs"), service.externalIPs?.length ? service.externalIPs.map((ip) => <Tag key={ip}>{ip}</Tag>) : null]]} /><h4 className="detail-subtitle">{t("Ports")}</h4><ul className="detail-list">{service.ports.map((port) => <li key={`${port.protocol}:${port.port}:${port.name || ""}`}><Tag>{port.protocol} {port.port}</Tag>{port.targetPort !== null && port.targetPort !== undefined ? <><span>{t("to target")}</span><Tag>{String(port.targetPort)}</Tag></> : null}{port.nodePort ? <><span>{t("NodePort")}</span><Tag>{port.nodePort}</Tag></> : null}{port.name ? <span>({port.name})</span> : null}</li>)}</ul></>;
 }
 
+const TRANSIENT_WAITING = new Set(["ContainerCreating", "PodInitializing"]);
+
+function podStatusPill(pod: PodSummary): { tone: "ok" | "warn" | "bad"; label: string; detail?: string } {
+  const badWaiting = pod.containers.find((c) => c.waitingReason && !TRANSIENT_WAITING.has(c.waitingReason));
+  if (badWaiting?.waitingReason) return { tone: "bad", label: badWaiting.waitingReason, detail: `${pod.phase} · container ${badWaiting.name}` };
+  const badTerminated = pod.containers.find((c) => c.terminatedReason && c.terminatedReason !== "Completed");
+  if (badTerminated?.terminatedReason) return { tone: "bad", label: badTerminated.terminatedReason, detail: `${pod.phase} · container ${badTerminated.name}` };
+  const ok = pod.phase === "Running" && pod.containers.every((c) => c.ready);
+  return { tone: ok ? "ok" : "warn", label: pod.phase };
+}
+
 function PodsTable({ name, pods, openModal }: { name: string; pods: PodSummary[]; openModal: (modal: ModalState) => void }) {
-  return <div className="table-wrap"><table><thead><tr><th>{t("Name")}</th><th>{t("Status")}</th><th>{t("Pod IP")}</th><th>{t("Node")}</th><th>{t("Restarts")}</th><th>{t("Shell")}</th></tr></thead><tbody>{pods.map((pod) => { const restarts = pod.containers.reduce((sum, item) => sum + (item.restartCount || 0), 0); const ok = pod.phase === "Running" && pod.containers.every((item) => item.ready); const container = pod.containers[0]?.name; return <tr key={pod.name}><td><Tag>{pod.name}</Tag></td><td><Pill tone={ok ? "ok" : "warn"}>{pod.phase}</Pill></td><td>{pod.podIP ? <Tag>{pod.podIP}</Tag> : "-"}</td><td>{pod.nodeName || "-"}</td><td>{restarts}</td><td>{container ? <button className="icon-button" type="button" aria-label={`Open terminal for ${pod.name}`} onClick={() => openModal({ type: "terminal", name, pod: pod.name, container })}><SquareTerminal size={16} /></button> : "-"}</td></tr>; })}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>{t("Name")}</th><th>{t("Status")}</th><th>{t("Pod IP")}</th><th>{t("Node")}</th><th>{t("Restarts")}</th><th>{t("Shell")}</th></tr></thead><tbody>{pods.map((pod) => { const restarts = pod.containers.reduce((sum, item) => sum + (item.restartCount || 0), 0); const status = podStatusPill(pod); const container = pod.containers[0]?.name; return <tr key={pod.name}><td><Tag>{pod.name}</Tag></td><td><Pill tone={status.tone} title={status.detail}>{status.label}</Pill></td><td>{pod.podIP ? <Tag>{pod.podIP}</Tag> : "-"}</td><td>{pod.nodeName || "-"}</td><td>{restarts}</td><td>{container ? <button className="icon-button" type="button" aria-label={`Open terminal for ${pod.name}`} onClick={() => openModal({ type: "terminal", name, pod: pod.name, container })}><SquareTerminal size={16} /></button> : "-"}</td></tr>; })}</tbody></table></div>;
+}
+
+function EventsTable({ items }: { items: K8sEvent[] }) {
+  return <div className="table-wrap"><table><thead><tr><th>{t("When")}</th><th>{t("Type")}</th><th>{t("Reason")}</th><th>{t("Pod")}</th><th>{t("Message")}</th></tr></thead><tbody>{items.map((ev, i) => <tr key={`${ev.involvedObject.name}:${ev.lastTimestamp ?? ""}:${i}`}><td>{fmtTs(ev.lastTimestamp ?? undefined)}{ev.count > 1 ? <> · <Tag>×{ev.count}</Tag></> : null}</td><td><Pill tone={ev.type === "Warning" ? "bad" : "ok"}>{ev.type}</Pill></td><td><Tag>{ev.reason}</Tag></td><td><Tag>{ev.involvedObject.name}</Tag></td><td>{ev.message}</td></tr>)}</tbody></table></div>;
 }
 
 function gateLabel(raw?: string | null): string {

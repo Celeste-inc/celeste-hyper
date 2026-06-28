@@ -273,6 +273,31 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
       { detail: { summary: "List pods backing a service", tags: ["service-ops"] } },
     )
     .get(
+      "/services/:name/events",
+      async ({ params, status }) => {
+        const svc = deps.registry.get(params.name);
+        if (!svc) return status(404, { error: "service not found" });
+        const target = await findPodSelector(svc.name);
+        if (!target) return { items: [] };
+        try {
+          const k8s = deps.pool.getOrThrow(target.clusterId);
+          const pods = await k8s.listPods(target.namespace, target.selector);
+          const podNames = new Set(pods.map((p) => p.name));
+          const events = await k8s.listEvents(target.namespace);
+          // OR across names isn't expressible in kubectl --field-selector; filter client-side to
+          // events involving a pod that backs THIS service.
+          const items = events
+            .filter((e) => e.involvedObject.kind === "Pod" && podNames.has(e.involvedObject.name))
+            .sort((a, b) => (b.lastTimestamp ?? "").localeCompare(a.lastTimestamp ?? ""))
+            .slice(0, 50);
+          return { items };
+        } catch (e) {
+          return { items: [], error: (e as Error).message };
+        }
+      },
+      { detail: { summary: "List Kubernetes events for pods backing a service", tags: ["service-ops"] } },
+    )
+    .get(
       "/services/:name/networking",
       async ({ params, status }) => {
         const svc = deps.registry.get(params.name);
