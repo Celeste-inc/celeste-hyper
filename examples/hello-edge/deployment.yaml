@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-echo
+  namespace: edge-apps
+  labels: { app: edge-echo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: edge-echo } }
+  template:
+    metadata:
+      labels: { app: edge-echo }
+    spec:
+      containers:
+        - name: edge-echo
+          image: traefik/whoami:v1.10
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 80 }
+          readinessProbe:
+            tcpSocket: { port: 80 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits:   { cpu: 100m, memory: 64Mi }
+          envFrom:
+            - configMapRef: { name: edge-echo-config, optional: true }
+            - secretRef:    { name: edge-echo-secret, optional: true }

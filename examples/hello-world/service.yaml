@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-world
+  namespace: default
+  labels:
+    app: hello-world
+spec:
+  type: NodePort
+  selector:
+    app: hello-world
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      nodePort: 30180
