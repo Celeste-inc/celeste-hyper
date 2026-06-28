@@ -19,9 +19,9 @@ flowchart LR
   cfg -. seed on first boot .-> sqlite[(SQLite clusters table)]
   kcdir --> pool
   sqlite --> pool
-  pool -- kubectl --kubeconfig=... --> A
-  pool -- kubectl --kubeconfig=... --> B
-  pool -- kubectl --kubeconfig=... --> C
+  pool -->|kubectl| A
+  pool -->|kubectl| B
+  pool -->|kubectl| C
 ```
 
 Each cluster is identified by an immutable `id`. Two services in two clusters with the same name are two separate registry entries (`payments-prod`, `payments-staging`). Registering a cluster does **not** touch the cluster itself: it only persists a label and a path to a kubeconfig file the host can read.

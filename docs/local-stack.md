@@ -37,8 +37,8 @@ flowchart TB
     seed1[seed-primary] -. apply hello-world .-> primary
     seed2[seed-edge]    -. apply edge-echo .-> edge
 
-    hyperKc1 -. kubectl ... .-> api1
-    hyperKc2 -. kubectl ... .-> api2
+    hyperKc1 -. kubectl .-> api1
+    hyperKc2 -. kubectl .-> api2
   end
 
   browser --> hyper

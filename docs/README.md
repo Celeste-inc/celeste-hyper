@@ -101,7 +101,7 @@ sequenceDiagram
     H->>K: k3s ctr import <.tar>
     H->>K: kubectl apply -f manifests/
   else registry-pull
-    H->>K: kubectl set image &lt;kind&gt;/&lt;name&gt;
+    H->>K: kubectl set image kind/name
     H->>K: kubectl rollout status
   end
 
