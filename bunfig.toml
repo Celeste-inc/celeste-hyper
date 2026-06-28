@@ -1,0 +1,4 @@
+[test]
+# Backend tests only. The frontend uses Vitest (jsdom); keep `bun test` from recursing
+# into frontend/ where the *.test.tsx files need a DOM + Vitest runtime.
+root = "src"
