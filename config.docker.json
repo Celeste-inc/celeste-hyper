@@ -1,0 +1,32 @@
+{
+  "listen": { "host": "0.0.0.0", "port": 8080 },
+  "r2": {
+    "endpoint": "https://example-account-id.r2.cloudflarestorage.com",
+    "bucket": "local-builds",
+    "accessKeyId": "local-access-key",
+    "secretAccessKey": "local-secret-key",
+    "region": "auto"
+  },
+  "k8s": { "runtime": "docker", "namespace": "default" },
+  "stateDir": "/data/state",
+  "envFilesDir": "/data/env",
+  "workDir": "/data/work",
+  "poller": { "enabled": true, "intervalSec": 15, "autoDeploy": false },
+  "services": [],
+  "clusters": [
+    {
+      "id": "primary",
+      "name": "Primary (default)",
+      "kubeconfigPath": "/kubeconfig/primary/kubeconfig",
+      "defaultNamespace": "default",
+      "runtime": "docker"
+    },
+    {
+      "id": "edge",
+      "name": "Edge (edge-apps)",
+      "kubeconfigPath": "/kubeconfig/edge/kubeconfig",
+      "defaultNamespace": "edge-apps",
+      "runtime": "docker"
+    }
+  ]
+}

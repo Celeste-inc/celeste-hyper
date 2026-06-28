@@ -1,0 +1,25 @@
+{
+  "$schema": "comment: this is the canonical reference; copy to /etc/celeste-hyper/config.json on the VM",
+  "listen": { "host": "0.0.0.0", "port": 8080 },
+  "r2": {
+    "endpoint": "https://example-account-id.r2.cloudflarestorage.com",
+    "bucket": "service-builds",
+    "accessKeyId": "change-me",
+    "secretAccessKey": "change-me",
+    "region": "auto"
+  },
+  "k8s": {
+    "kubeconfig": "/etc/rancher/k3s/k3s.yaml",
+    "runtime": "auto",
+    "namespace": "default"
+  },
+  "stateDir": "/var/lib/celeste-hyper",
+  "envFilesDir": "/etc/celeste-hyper/services",
+  "workDir": "/var/lib/celeste-hyper/work",
+  "poller": {
+    "intervalSec": 60,
+    "autoDeploy": false,
+    "enabled": true
+  },
+  "services": []
+}
