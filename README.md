@@ -81,6 +81,34 @@ curl -X POST http://hyper/api/services \
 
 ## Quick start (on the k3s VM)
 
+### One-liner (recommended)
+
+Paste this on any Debian/Ubuntu/RHEL/Alpine host with internet access — it installs Bun + kubectl, clones the repo, builds the binary, drops the systemd unit, and starts the service. Re-run the same command to pull the latest `main` and roll out the new build in place; existing config and state are preserved.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Celeste-inc/celeste-hyper/main/deploy/bootstrap.sh | sudo bash
+```
+
+Common overrides:
+
+```bash
+# pin a branch / tag / sha
+curl -fsSL https://raw.githubusercontent.com/Celeste-inc/celeste-hyper/main/deploy/bootstrap.sh | sudo REF=v0.1.0 bash
+
+# also install k3s on this host
+curl -fsSL https://raw.githubusercontent.com/Celeste-inc/celeste-hyper/main/deploy/bootstrap.sh | sudo INSTALL_CLUSTER=true CLUSTER_MODE=k3s bash
+
+# seed R2 credentials on first install
+curl -fsSL https://raw.githubusercontent.com/Celeste-inc/celeste-hyper/main/deploy/bootstrap.sh | sudo \
+  R2_ENDPOINT_URL=https://<account>.r2.cloudflarestorage.com \
+  R2_BUCKET=service-builds \
+  R2_ACCESS_KEY_ID=<key> R2_SECRET_ACCESS_KEY=<secret> bash
+```
+
+All tunables (`REPO_URL`, `REF`, `SRC_DIR`, `PREFIX`, `CONFIG_DIR`, `STATE_DIR`, `BUN_VERSION`, `TARGET_ARCH`, `FORCE_REBUILD`, `SKIP_BUILD`, `INSTALL_KUBECTL`, `INSTALL_CLUSTER`, `CLUSTER_MODE`) are documented at the top of [`deploy/bootstrap.sh`](./deploy/bootstrap.sh).
+
+### Manual install (pre-built binary)
+
 1. Copy the binary and deploy assets to the VM:
 
    ```bash
