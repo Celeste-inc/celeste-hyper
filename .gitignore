@@ -1,0 +1,93 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+build/
+dist/
+frontend/dist/
+src/generated/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# Runtime / local state
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-journal
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+
+# Local config & secrets
+.env
+.env.*
+!.env.example
+config.json
+config.local.json
+config.*.local.json
+*.kubeconfig
+kubeconfig
+kubeconfig.*
+clusters/
+secrets/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Test & coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Temporary files
+tmp/
+temp/
+.cache/
+.tmp/
+
+# LLM / planning scratchpads (not project documentation)
+docs/sdd.md
+docs/implementation-plan.md
+docs/implementation-plan-review.md
+docs/kickoff-prompt.md
+docs/guardrails.md
+docs/orchestration-roadmap.md
+docs/test-harness.md
+.claude/
+CLAUDE.md
+AGENTS.md
+.codex/
+.cursor/
+.aider*
