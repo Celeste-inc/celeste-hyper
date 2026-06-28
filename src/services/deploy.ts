@@ -26,6 +26,38 @@ import { log } from "../lib/logger.ts";
  * that is a direct child of a `metadata:` block is dropped (a `data:`/`subjects:` key named "namespace"
  * is left untouched); nested `spec.template.metadata.namespace` is harmless to drop.
  */
+/**
+ * Render the v1/Service object the operator configured via the UI `expose` panel. Caller must
+ * confirm `svc.expose` is set. Selector pins to `app: <svc.name>` — the same label the bundle
+ * deployments emit, so an operator-authored Service with a custom selector is the escape hatch.
+ */
+export function buildExposeYaml(svc: ServiceModel): string {
+  const exp = svc.expose!;
+  const target = exp.targetPort ?? exp.port;
+  const targetLine = typeof target === "string" ? `targetPort: "${target}"` : `targetPort: ${target}`;
+  const nodePortLine = exp.type === "NodePort" && exp.nodePort ? `\n      nodePort: ${exp.nodePort}` : "";
+  return [
+    "apiVersion: v1",
+    "kind: Service",
+    "metadata:",
+    `  name: ${svc.name}`,
+    `  namespace: ${svc.namespace}`,
+    "  labels:",
+    `    app: ${svc.name}`,
+    "    app.kubernetes.io/managed-by: celeste-hyper",
+    "spec:",
+    `  type: ${exp.type}`,
+    "  selector:",
+    `    app: ${svc.name}`,
+    "  ports:",
+    "    - name: http",
+    `      port: ${exp.port}`,
+    `      ${targetLine}`,
+    `      protocol: ${exp.protocol}${nodePortLine}`,
+    "",
+  ].join("\n");
+}
+
 export function forceNamespace(manifest: string): string {
   const out: string[] = [];
   let metaIndent = -1; // indent of the active `metadata:` block, or -1 when outside one
@@ -96,6 +128,22 @@ export class Deployer {
 
   private k8sFor(service: ServiceModel) {
     return this.pool.getOrThrow(service.clusterId);
+  }
+
+  /**
+   * Apply the per-service Service object derived from `svc.expose` (optional). Idempotent via
+   * `kubectl apply` — re-running with the same spec is a no-op; re-running after a port/type change
+   * patches in place. Returns null when no expose config is set (operator-authored Services in the
+   * bundle remain authoritative).
+   */
+  private async applyExpose(service: ServiceModel, k8s: K8sLike): Promise<DeployStep | null> {
+    if (!service.expose) return null;
+    const yaml = buildExposeYaml(service);
+    const r = await k8s.applyManifest(yaml, service.namespace);
+    if (r.code !== 0) return { name: "apply-expose", ok: false, message: r.stderr || r.stdout };
+    const exp = service.expose;
+    const tail = exp.type === "NodePort" && exp.nodePort ? ` nodePort=${exp.nodePort}` : "";
+    return { name: "apply-expose", ok: true, message: `Service/${service.name} type=${exp.type} port=${exp.port}${tail}` };
   }
 
   /**
@@ -206,6 +254,12 @@ export class Deployer {
     const configEnv = pathFor(this.cfg.envFilesDir, service.name, "config");
     const secretEnv = pathFor(this.cfg.envFilesDir, service.name, "secret");
 
+    const exposeStep = await this.applyExpose(service, k8s);
+    if (exposeStep) {
+      steps.push(exposeStep);
+      if (!exposeStep.ok) return fail(exposeStep.name, exposeStep.message ?? "apply-expose failed");
+    }
+
     const renderedDeployment = join(k8sDir, "deployment.rendered.yaml");
     const deploymentFile = existsSync(renderedDeployment)
       ? renderedDeployment
@@ -311,6 +365,12 @@ export class Deployer {
     for (const w of env.warnings) warnings.push(w);
     if (env.error) return fail(env.error.name, env.error.message);
 
+    const exposeStep = await this.applyExpose(service, k8s);
+    if (exposeStep) {
+      steps.push(exposeStep);
+      if (!exposeStep.ok) return fail(exposeStep.name, exposeStep.message ?? "apply-expose failed");
+    }
+
     const apply = await k8s.applyFile(k8sDir, service.namespace);
     if (apply.code !== 0) return fail("apply-manifests", apply.stderr);
     ok("apply-manifests", k8sDir);
@@ -387,6 +447,12 @@ export class Deployer {
     const fullImage = `${service.imageRef}:${tag}`;
     const workload = workloadNameFor(service);
     const container = containerNameFor(service);
+
+    const exposeStep = await this.applyExpose(service, k8s);
+    if (exposeStep) {
+      steps.push(exposeStep);
+      if (!exposeStep.ok) return fail(exposeStep.name, exposeStep.message ?? "apply-expose failed");
+    }
 
     // canary/blue-green only make sense for a Deployment (the route also enforces this).
     if ((mode === "canary" || mode === "blue-green") && service.workloadKind !== "Deployment") {

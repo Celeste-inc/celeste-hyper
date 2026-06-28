@@ -36,6 +36,18 @@ export const HealthGateSchema = z.object({
   // accepted here rather than silently ignored. The gate uses Kubernetes readiness/restart signals.
 });
 
+// Minimal Service object the hyper provisions on the operator's behalf — covers the common
+// "expose this workload on port X" case without requiring a hand-written Service yaml in the
+// bundle. Set on a service to enable; omit to keep manifests authoritative.
+export const ExposeSchema = z.object({
+  type: z.enum(["ClusterIP", "NodePort", "LoadBalancer"]).default("ClusterIP"),
+  port: z.number().int().min(1).max(65535),
+  targetPort: z.union([z.number().int().min(1).max(65535), z.string().min(1).max(63)]).optional(), // string = named container port
+  nodePort: z.number().int().min(30000).max(32767).optional(), // ignored unless type=NodePort; range matches k8s default
+  protocol: z.enum(["TCP", "UDP"]).default("TCP"),
+});
+export type ExposeConfig = z.infer<typeof ExposeSchema>;
+
 const BaseService = {
   name: z.string().min(1).regex(ID_RE, "lowercase letters, digits, dot, dash"),
   namespace: z.string().min(1).default("default"),
@@ -53,6 +65,11 @@ const BaseService = {
   helmRelease: z.string().min(1).max(253).regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/, "invalid release name").optional(),
   helmChartRef: z.string().min(1).max(512).regex(/^[A-Za-z0-9._/][A-Za-z0-9._/:@+-]*$/, "invalid chart ref").optional(),
   helmImageTagValuePath: z.string().min(1).max(256).regex(/^[A-Za-z0-9][A-Za-z0-9_.[\]]*$/, "invalid values path").optional(),
+  // Opt-in: persisting config.env / secret.env via the UI enqueues a redeploy at the current tag.
+  // Off by default — the operator triggers via Deploy as usual.
+  autoRedeployOnEnv: z.boolean().optional(),
+  // Optional Service object the hyper provisions in front of the workload; see ExposeSchema.
+  expose: ExposeSchema.optional(),
 };
 
 export const R2BundleSchema = z.object({

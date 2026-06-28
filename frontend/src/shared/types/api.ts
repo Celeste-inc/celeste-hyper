@@ -194,6 +194,18 @@ export interface BaseService {
   healthGate?: { attempts: number; intervalSec: number; successThreshold: number };
   /** Opt-in: on a failed health gate, auto-enqueue a (grace-delayed) rollback (P1.9). */
   autoRollback?: boolean;
+  /** Opt-in: saving config.env / secret.env via the UI enqueues a redeploy at the current tag. */
+  autoRedeployOnEnv?: boolean;
+  /** Optional Service object the hyper provisions in front of the workload. */
+  expose?: ExposeConfig;
+}
+
+export interface ExposeConfig {
+  type: "ClusterIP" | "NodePort" | "LoadBalancer";
+  port: number;
+  targetPort?: number | string;
+  nodePort?: number;
+  protocol: "TCP" | "UDP";
 }
 
 export interface AutoRollbackStatus {
