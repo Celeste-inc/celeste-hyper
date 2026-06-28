@@ -9,10 +9,6 @@ export interface AvailableVersion {
   lastModified: Date;
 }
 
-function compareTagsDesc(a: string, b: string): number {
-  return b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" });
-}
-
 export async function listVersions(r2: R2Like, svc: R2BundleService): Promise<AvailableVersion[]> {
   const prefixes = await r2.listPrefixes(svc.r2Prefix);
   const out: AvailableVersion[] = [];
@@ -30,7 +26,8 @@ export async function listVersions(r2: R2Like, svc: R2BundleService): Promise<Av
     }
     out.push({ tag, imageKey: tarKey, imageSize: tarObj.size, lastModified: tarObj.lastModified });
   }
-  out.sort((a, b) => compareTagsDesc(a.tag, b.tag));
+
+  out.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
   return out;
 }
 
