@@ -1,0 +1,131 @@
+# Local multi-cluster simulation for celeste-hyper.
+#
+#   docker compose up --build
+#   open http://localhost:8080
+#
+# Topology:
+#   k3s-primary  — first cluster, runs hello-world in the default namespace
+#   k3s-edge     — second cluster, runs edge-echo  in namespace edge-apps
+#   seed-*       — one-shot containers that rewrite each cluster's kubeconfig
+#                  to use the compose hostname, then apply the manifests
+#   hyper        — celeste-hyper UI; mounts both kubeconfigs, talks to both
+#                  clusters via the kubeconfigs registered in config.docker.json
+#
+# Useful targets:
+#   docker compose logs -f hyper
+#   docker compose exec hyper kubectl --kubeconfig=/kubeconfig/primary get pods -A
+#   docker compose down -v
+
+services:
+  k3s-primary:
+    image: rancher/k3s:v1.31.13-k3s1
+    privileged: true
+    restart: unless-stopped
+    command:
+      - server
+      - --disable=traefik
+      - --tls-san=k3s-primary
+      - --write-kubeconfig-mode=0644
+    environment:
+      - K3S_KUBECONFIG_OUTPUT=/output/kubeconfig.yaml
+      - K3S_KUBECONFIG_MODE=666
+    volumes:
+      - k3s-primary-data:/var/lib/rancher/k3s
+      - k3s-primary-config:/output
+    ports:
+      - "30180:30180"   # hello-world NodePort → http://localhost:30180
+    healthcheck:
+      test: ["CMD-SHELL", "kubectl --kubeconfig=/output/kubeconfig.yaml get nodes >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  k3s-edge:
+    image: rancher/k3s:v1.31.13-k3s1
+    privileged: true
+    restart: unless-stopped
+    command:
+      - server
+      - --disable=traefik
+      - --tls-san=k3s-edge
+      - --write-kubeconfig-mode=0644
+    environment:
+      - K3S_KUBECONFIG_OUTPUT=/output/kubeconfig.yaml
+      - K3S_KUBECONFIG_MODE=666
+    volumes:
+      - k3s-edge-data:/var/lib/rancher/k3s
+      - k3s-edge-config:/output
+    ports:
+      - "30181:30181"   # edge-echo NodePort → http://localhost:30181
+    healthcheck:
+      test: ["CMD-SHELL", "kubectl --kubeconfig=/output/kubeconfig.yaml get nodes >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  seed-primary:
+    image: alpine/kubectl:1.33.4
+    depends_on:
+      k3s-primary:
+        condition: service_healthy
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/seed.sh"]
+    environment:
+      - K3S_SERVICE=k3s-primary
+      - ROLLOUT_NS=default
+      - ROLLOUT_NAME=hello-world
+    volumes:
+      - k3s-primary-config:/kubeconfig-src:ro
+      - hyper-primary-kc:/kubeconfig-out
+      - ./examples/hello-world:/manifests:ro
+      - ./examples/seed/seed.sh:/seed.sh:ro
+    restart: "no"
+
+  seed-edge:
+    image: alpine/kubectl:1.33.4
+    depends_on:
+      k3s-edge:
+        condition: service_healthy
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/seed.sh"]
+    environment:
+      - K3S_SERVICE=k3s-edge
+      - ROLLOUT_NS=edge-apps
+      - ROLLOUT_NAME=edge-echo
+    volumes:
+      - k3s-edge-config:/kubeconfig-src:ro
+      - hyper-edge-kc:/kubeconfig-out
+      - ./examples/hello-edge:/manifests:ro
+      - ./examples/seed/seed.sh:/seed.sh:ro
+    restart: "no"
+
+  hyper:
+    build: .
+    depends_on:
+      k3s-primary: { condition: service_healthy }
+      k3s-edge:    { condition: service_healthy }
+    environment:
+      - HYPER_CONFIG=/app/config.docker.json
+      - LOG_LEVEL=info
+      - R2_ENDPOINT_URL=https://example-account-id.r2.cloudflarestorage.com
+      - R2_BUCKET=local-builds
+      - R2_ACCESS_KEY_ID=local-access-key
+      - R2_SECRET_ACCESS_KEY=local-secret-key
+    volumes:
+      - hyper-primary-kc:/kubeconfig/primary:ro
+      - hyper-edge-kc:/kubeconfig/edge:ro
+      - hyper-data:/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  k3s-primary-data:
+  k3s-primary-config:
+  k3s-edge-data:
+  k3s-edge-config:
+  hyper-primary-kc:
+  hyper-edge-kc:
+  hyper-data:

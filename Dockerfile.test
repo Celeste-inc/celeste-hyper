@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1.7
+#
+# Containerised test/CI gate. `oven/bun:1.3.14` is Debian-based (glibc) — it stands in for a
+# real Ubuntu/Debian VM/VPS, unlike the Alpine (musl) runtime image. Running the suite here
+# catches anything that depends on the host (macOS) environment.
+#
+#   docker build -f Dockerfile.test -t celeste-hyper-test .
+#
+# The build runs `bun run check` (typecheck + bun test + frontend typecheck + Vitest + frontend
+# build); a non-zero result fails the image build, so a green build == a green gate on Linux.
+FROM oven/bun:1.3.14
+
+ENV TZ=UTC \
+    CI=1 \
+    HYPER_TEST_NETWORK_BLOCK=1
+
+WORKDIR /app
+
+# Dependencies first (cached across source-only changes).
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY frontend/package.json frontend/bun.lock ./frontend/
+RUN cd frontend && bun install --frozen-lockfile
+
+# Source (node_modules excluded via .dockerignore so the installed deps survive).
+COPY . .
+
+RUN bun run check
