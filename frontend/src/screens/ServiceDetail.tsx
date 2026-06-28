@@ -1,0 +1,464 @@
+import { Fragment, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
+import {
+  Activity,
+  ArrowUpCircle,
+  Copy,
+  ExternalLink,
+  FileCode2,
+  Gauge,
+  Globe2,
+  History,
+  KeyRound,
+  Pause,
+  Play,
+  Rocket,
+  Settings,
+  SquareTerminal,
+  Undo2,
+  WrapText,
+  X,
+} from "lucide-react";
+import type { AutoRollbackStatus, Deployment, Endpoint, HelmInfo, HpaView, NetworkingService, PodSummary, Service, ServiceListItem } from "../shared/types/api";
+import { http } from "../shared/api/client";
+import { apiError, fmtTs } from "../shared/utils/format";
+import { t } from "../shared/i18n/t";
+import { AppButton } from "../components/atoms/AppButton";
+import { Field } from "../components/atoms/Field";
+import { Pill } from "../components/atoms/Pill";
+import { Tag } from "../components/atoms/Tag";
+import { EnvPanels } from "../components/molecules/EnvPanels";
+import { ClusterPill } from "../components/organisms/Cards";
+import type { ModalState, Notify } from "./types";
+
+interface ServiceDetailProps {
+  name: string;
+  services: ServiceListItem[];
+  clusterLabel: (id: string) => string;
+  notify: Notify;
+  onClose: () => void;
+  setModal: (modal: ModalState | null) => void;
+  isObscured: boolean;
+}
+
+export function ServiceDetail({ name, services, clusterLabel, notify, onClose, setModal, isObscured }: ServiceDetailProps) {
+  const [service, setService] = useState<Service | null>(null);
+  const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [pods, setPods] = useState<PodSummary[]>([]);
+  const [selector, setSelector] = useState<string>();
+  const [networking, setNetworking] = useState<NetworkingService | null>(null);
+  const [canRollback, setCanRollback] = useState(false);
+  const card = services.find((item) => item.name === name);
+
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !isObscured) onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = "";
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isObscured, onClose]);
+
+  useEffect(() => {
+    void Promise.all([http.service(name), http.deployments(name), http.pods(name), http.networking(name), http.rollbackPreview(name)]).then(
+      ([serviceRes, depRes, podRes, netRes, rbRes]) => {
+        setService(serviceRes.body.service || null);
+        setDeployments((depRes.body.items || []).slice(0, 8));
+        setPods(podRes.body.items || []);
+        setSelector(podRes.body.selector);
+        setNetworking(netRes.body.service || null);
+        setCanRollback(Boolean(rbRes.body.eligible));
+      },
+    );
+  }, [name]);
+
+  const openModal = (modal: ModalState) => setModal(modal);
+
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside className="detail-sheet" role="dialog" aria-modal={!isObscured} aria-hidden={isObscured || undefined} aria-label={`${name} service details`}>
+        <button className="hyper-button ghost sheet-close" type="button" aria-label={t("Close service details")} onClick={onClose}><X size={18} /></button>
+        {!service ? <><h2 className="dialog-title">{name}</h2><p className="text-[var(--mut)]">{t("Loading service details...")}</p></> : (
+          <ServiceDetailContent service={service} card={card} deployments={deployments} pods={pods} selector={selector} networking={networking} clusterLabel={clusterLabel} notify={notify} openModal={openModal} canRollback={canRollback} />
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function ServiceDetailContent({ service, card, deployments, pods, selector, networking, clusterLabel, notify, openModal, canRollback }: {
+  service: Service;
+  card?: ServiceListItem;
+  deployments: Deployment[];
+  pods: PodSummary[];
+  selector?: string;
+  networking: NetworkingService | null;
+  clusterLabel: (id: string) => string;
+  notify: Notify;
+  openModal: (modal: ModalState) => void;
+  canRollback: boolean;
+}) {
+  const name = service.name;
+  const env = card?.env || { config: { exists: false, keys: [], path: "" }, secret: { exists: false, keys: [], path: "" } };
+  return (
+    <>
+      <h2 className="dialog-title">{name}</h2>
+      <p className="text-[var(--mut)]">{t("Namespace")} <code>{service.namespace}</code> · {t("Registered in Celeste Hyper")}</p>
+      <AutoRollbackBanner name={name} notify={notify} />
+      <div className="detail-toolbar">
+        <AppButton onClick={() => openModal({ type: "deploy", name })}><Rocket size={15} />{t("Deploy")}</AppButton>
+        {canRollback ? <AppButton variant="ghost" onClick={() => openModal({ type: "rollback", name })}><Undo2 size={15} />{t("Rollback")}</AppButton> : null}
+        <AppButton variant="ghost" onClick={() => openModal({ type: "env", name, kind: "config" })}><FileCode2 size={15} />config.env</AppButton>
+        <AppButton variant="ghost" onClick={() => openModal({ type: "env", name, kind: "secret" })}><KeyRound size={15} />secret.env</AppButton>
+        <AppButton variant="ghost" onClick={() => openModal({ type: "service-settings", name })}><Settings size={15} />{t("Settings")}</AppButton>
+        <AppButton variant="ghost" onClick={() => openModal({ type: "history", name })}><History size={15} />{t("History")}</AppButton>
+      </div>
+      <DetailSection title={t("Overview")}><Kv rows={[[t("Current tag"), card?.currentTag ? <Tag>{card.currentTag}</Tag> : null], [t("Cluster"), <Pill tone="acc" title={`Cluster id: ${service.clusterId}`}>{clusterLabel(service.clusterId)}</Pill>], [t("Deployed at"), card?.deployedAt ? fmtTs(card.deployedAt) : null], [t("Cluster status"), <ClusterPill cluster={card?.cluster ?? null} />], [t("Update available"), card?.newVersion ? <Pill tone="warn">{card.newVersion}</Pill> : null]]} /></DetailSection>
+      <DetailSection title={t("Source")}><SourceDetail service={service} /></DetailSection>
+      <DetailSection title={t("Cluster")}>{card?.cluster ? <><Kv rows={[[t("Kind"), <Tag>{card.cluster.kind}</Tag>], [t("Replicas"), `${card.cluster.readyReplicas} / ${card.cluster.replicas} ready`]]} /><h4 className="detail-subtitle">{t("Containers")}</h4><ul className="detail-list">{card.cluster.containers.map((container) => <li key={container.name}><Tag>{container.name}</Tag><span>{t("to")}</span><Tag>{container.image}</Tag></li>)}</ul></> : <p className="text-[var(--mut)]">{t("No matching workload found in the cluster.")}</p>}</DetailSection>
+      <DetailSection title={t("Open service")}><EndpointPanel service={networking} notify={notify} clusterId={service.clusterId} openModal={openModal} /></DetailSection>
+      <DetailSection title={t("Networking")}>{networking ? <NetworkingInfo service={networking} /> : <p className="text-[var(--mut)]">{t("No Kubernetes Service object was found in the namespace.")}</p>}</DetailSection>
+      <AutoscalingPanel name={name} openModal={openModal} />
+      <HelmPanel name={name} notify={notify} />
+      <DetailSection title={t("Pods")}>{pods.length ? <PodsTable name={name} pods={pods} openModal={openModal} /> : <p className="text-[var(--mut)]">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}</DetailSection>
+      <DetailSection title={t("Live logs")}><LogsPanel serviceName={name} pods={pods} /></DetailSection>
+      <DetailSection title={t("Environment")}><EnvPanels env={env} /></DetailSection>
+      <DetailSection title={t("Recent deployments")}>{deployments.length ? <DeploymentTable items={deployments} /> : <p className="text-[var(--mut)]">{t("No deployments yet.")}</p>}</DetailSection>
+    </>
+  );
+}
+
+function AutoRollbackBanner({ name, notify }: { name: string; notify: Notify }) {
+  const [status, setStatus] = useState<AutoRollbackStatus | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const refresh = () =>
+      void http.autoRollbackStatus(name).then((res) => {
+        if (alive && res.status === 200) setStatus(res.body);
+      });
+    refresh();
+    const poll = setInterval(refresh, 2000); // catch the worker's grace-window enqueue / clear
+    const tick = setInterval(() => alive && setNow(Date.now()), 1000); // drive the countdown
+    return () => {
+      alive = false;
+      clearInterval(poll);
+      clearInterval(tick);
+    };
+  }, [name]);
+
+  if (!status || (!status.pending && !status.degraded)) return null;
+
+  const cancel = async () => {
+    setBusy(true);
+    const res = await http.cancelAutoRollback(name);
+    setBusy(false);
+    if (res.status >= 400) return notify(apiError(res.body, res.status), "bad");
+    notify(t("Auto-rollback cancelled"));
+    setStatus((s) => (s ? { ...s, pending: null } : s));
+  };
+
+  const clear = async () => {
+    setBusy(true);
+    const res = await http.undegrade(name);
+    setBusy(false);
+    if (res.status >= 400) return notify(apiError(res.body, res.status), "bad");
+    notify(t("Deploys re-enabled"));
+    setStatus((s) => (s ? { ...s, degraded: null } : s));
+  };
+
+  const remaining = status.pending ? Math.max(0, Math.ceil((new Date(status.pending.nextAttemptAt).getTime() - now) / 1000)) : 0;
+  return (
+    <>
+      {status.pending ? (
+        <div className="detail-banner warn" role="status">
+          <span>{t("Health gate failed — automatic rollback")} {remaining > 0 ? `in ${remaining}s` : t("running…")}.</span>
+          {remaining > 0 ? (
+            <AppButton variant="ghost" disabled={busy} onClick={cancel}><X size={15} />{t("Cancel rollback")}</AppButton>
+          ) : null}
+        </div>
+      ) : null}
+      {status.degraded ? (
+        <div className="detail-banner bad" role="alert">
+          <span>{t("Service degraded:")} {status.degraded.reason}. {t("Deploys are blocked until re-enabled.")}</span>
+          <AppButton variant="ghost" disabled={busy} onClick={clear}><Play size={15} />{t("Re-enable deploys")}</AppButton>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function AutoscalingPanel({ name, openModal }: { name: string; openModal: (modal: ModalState) => void }) {
+  const [hpa, setHpa] = useState<HpaView | null>(null);
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    void http.hpa(name).then((res) => {
+      setAvailable(res.status === 200); // 409 → capability absent → panel hidden
+      setHpa(res.status === 200 ? res.body.hpa : null);
+    });
+  }, [name]);
+  if (!available) return null;
+  return (
+    <DetailSection title={t("Autoscaling")}>
+      {hpa ? (
+        <>
+          <Kv
+            rows={[
+              [t("Replicas"), `${hpa.currentReplicas ?? "?"} now · ${hpa.desiredReplicas ?? "?"} desired`],
+              [t("Range"), `${hpa.minReplicas ?? "?"} – ${hpa.maxReplicas ?? "?"}`],
+              [t("Target CPU"), hpa.targetCPUUtilizationPercentage != null ? `${hpa.targetCPUUtilizationPercentage}%` : "—"],
+            ]}
+          />
+          <AppButton variant="ghost" onClick={() => openModal({ type: "hpa", name, hpa })}><Gauge size={15} />{t("Edit autoscaling")}</AppButton>
+        </>
+      ) : (
+        <p className="text-[var(--mut)]">{t("No HorizontalPodAutoscaler targets this workload.")}</p>
+      )}
+    </DetailSection>
+  );
+}
+
+function HelmPanel({ name, notify }: { name: string; notify: Notify }) {
+  const [helm, setHelm] = useState<HelmInfo | null>(null);
+  const [available, setAvailable] = useState(false);
+  const [tag, setTag] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void http.helm(name).then((res) => {
+      const info = res.status === 200 ? res.body.helm : null; // 409 → capability absent; null → not Helm-managed
+      setAvailable(Boolean(info)); // either case → panel hidden
+      setHelm(info);
+    });
+  }, [name]);
+  if (!available || !helm) return null;
+
+  const upgrade = async () => {
+    setBusy(true);
+    const res = await http.helmUpgrade(name, tag.trim());
+    setBusy(false);
+    if (res.status >= 400) return notify(apiError(res.body, res.status), "bad");
+    notify(t("Helm upgrade enqueued"));
+    setTag("");
+  };
+
+  return (
+    <DetailSection title={t("Helm")}>
+      <Kv
+        rows={[
+          [t("Release"), <Tag>{helm.release}</Tag>],
+          [t("Namespace"), <Tag>{helm.namespace}</Tag>],
+          [t("Chart"), helm.chart ? <Tag>{helm.chart}</Tag> : null],
+          [t("Version"), helm.version ? <Tag>{helm.version}</Tag> : null],
+        ]}
+      />
+      {helm.upgradeable ? (
+        <>
+          <Field id="helm-tag" label={t("Image tag")} value={tag} placeholder={t("v1.2.3 or commit SHA")} onChange={setTag} />
+          <AppButton disabled={busy || !tag.trim()} onClick={upgrade}><ArrowUpCircle size={15} />{t("Upgrade")}</AppButton>
+        </>
+      ) : (
+        <p className="text-[var(--mut)]">{t("Configure helmRelease, helmChartRef and helmImageTagValuePath in Settings to enable upgrades.")}</p>
+      )}
+      <h4 className="detail-subtitle">{t("Values")}</h4>
+      <pre className="values-block">{JSON.stringify(helm.valuesRedacted, null, 2)}</pre>
+    </DetailSection>
+  );
+}
+
+function EndpointPanel({ service, notify, clusterId, openModal }: { service: NetworkingService | null; notify: Notify; clusterId: string; openModal: (modal: ModalState) => void }) {
+  const endpoints = useMemo(() => getEndpoints(service), [service]);
+  const hasServerEndpoints = Boolean(service?.endpoints?.length);
+
+  if (!service) return <p className="text-[var(--mut)]">{t("No networking information is available for this service.")}</p>;
+  if (endpoints.length === 0) return <p className="text-[var(--mut)]">{t("No accessible URL could be derived from the current Service ports.")}</p>;
+
+  const copy = async (url: string) => {
+    try {
+      await copyText(url);
+      notify(t("URL copied"));
+    } catch {
+      notify(t("Could not copy URL"), "bad");
+    }
+  };
+
+  return (
+    <>
+      <div className="endpoint-panel">
+        <div className="flex items-center gap-2"><Globe2 className="text-[var(--acc)]" size={20} /><strong>{t("Available endpoints")}</strong></div>
+        <ul>
+          {endpoints.map((endpoint) => (
+            <li key={`${endpoint.kind}:${endpoint.url}`}>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2"><Pill tone="acc">{endpoint.kind}</Pill><code className="endpoint-url">{endpoint.url}</code></div>
+                <p>{endpoint.description}</p>
+                {endpoint.dns ? <p className="text-xs text-[var(--mut)]">{endpoint.dns.resolved ? `DNS → ${endpoint.dns.addresses.join(", ")} (${endpoint.dns.elapsedMs}ms)` : `DNS: ${endpoint.dns.reason}`}</p> : null}
+              </div>
+              <div className="flex shrink-0 gap-2">
+                {endpoint.source ? <button className="icon-button" type="button" aria-label={`View source of ingress ${endpoint.source.ingressName}`} onClick={() => openModal({ type: "ingress-yaml", clusterId, namespace: endpoint.source!.ingressNamespace, name: endpoint.source!.ingressName })}><FileCode2 size={16} /></button> : null}
+                {endpoint.copyable ? <button className="icon-button" type="button" aria-label={`Copy ${endpoint.url}`} onClick={() => void copy(endpoint.url)}><Copy size={16} /></button> : null}
+                <a className="icon-button" href={endpoint.url} target="_blank" rel="noreferrer" aria-label={`Open ${endpoint.url} in a new tab`}><ExternalLink size={16} /></a>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+      {!hasServerEndpoints && service.ports.some((port) => port.nodePort) ? <p className="mt-3 text-xs text-[var(--mut)]">{t("Best-effort fallback: NodePort is reachable at")} <code>&lt;host&gt;:&lt;nodePort&gt;</code>. {t("The host shown above uses the current browser hostname.")}</p> : null}
+    </>
+  );
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Copy command failed");
+}
+
+function getEndpoints(service: NetworkingService | null): Endpoint[] {
+  if (!service) return [];
+  if (service.endpoints?.length) return service.endpoints;
+  const protocol = window.location.protocol === "https:" ? "https" : "http";
+  const clusterEndpoints = service.clusterIP && service.clusterIP !== "None"
+    ? service.ports.map((port) => ({ kind: "cluster-ip" as const, url: `${protocol}://${service.clusterIP}:${port.port}`, description: t("Reachable from within the cluster network."), copyable: true }))
+    : [];
+  const nodeEndpoints = service.ports.filter((port) => port.nodePort).map((port) => ({ kind: "node-port" as const, url: `${protocol}://${window.location.hostname}:${port.nodePort}`, description: t("Best-effort URL using the current control-plane hostname."), copyable: true }));
+  return [...nodeEndpoints, ...clusterEndpoints];
+}
+
+function SourceDetail({ service }: { service: Service }) {
+  if (service.sourceType === "r2-bundle") return <Kv rows={[[t("Source type"), <Pill tone="acc">{t("R2 bundle")}</Pill>], [t("R2 source"), <Tag>{service.r2SourceId || "default"}</Tag>], [t("R2 prefix"), <Tag>{service.r2Prefix}</Tag>], [t("Manifest root"), service.manifestRoot ? <Tag>{service.manifestRoot}</Tag> : null], [t("Image tar pattern"), service.imageTarPattern ? <Tag>{service.imageTarPattern}</Tag> : null], [t("Image ref prefix"), service.imageRefPrefix ? <Tag>{service.imageRefPrefix}</Tag> : null]]} />;
+  if (service.sourceType === "git-sync") return <Kv rows={[[t("Source type"), <Pill tone="acc">{t("Git repo")}</Pill>], [t("Git URL"), <Tag>{service.gitUrl}</Tag>], [t("Git ref"), <Tag>{service.gitRef}</Tag>], [t("Git path"), <Tag>{service.gitPath}</Tag>], [t("Deploy key path"), service.deployKeyPath ? <Tag>{service.deployKeyPath}</Tag> : null]]} />;
+  return <Kv rows={[[t("Source type"), <Pill tone="acc">{t("Registry pull")}</Pill>], [t("Image reference"), <Tag>{service.imageRef}</Tag>], [t("Workload kind"), <Tag>{service.workloadKind}</Tag>], [t("Workload name"), <Tag>{service.workloadName || service.name}</Tag>], [t("Container name"), <Tag>{service.containerName || service.name}</Tag>], [t("Image pull secret"), service.imagePullSecret ? <Tag>{service.imagePullSecret}</Tag> : null]]} />;
+}
+
+function LogsPanel({ serviceName, pods }: { serviceName: string; pods: PodSummary[] }) {
+  const [pod, setPod] = useState(pods[0]?.name ?? "");
+  const [container, setContainer] = useState(pods[0]?.containers[0]?.name ?? "");
+  const [status, setStatus] = useState(t("Idle."));
+  const [lines, setLines] = useState<{ text: string; kind: "stdout" | "stderr" }[]>([]);
+  const [wrap, setWrap] = useState(true);
+  const [paused, setPaused] = useState(false);
+  const streamRef = useRef<EventSource | null>(null);
+  const startingRef = useRef(false);
+  const viewerRef = useRef<HTMLPreElement | null>(null);
+
+  useEffect(() => () => stopStream(streamRef), []);
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (viewer && !paused) viewer.scrollTop = viewer.scrollHeight;
+  }, [lines, paused]);
+  useEffect(() => {
+    const selectedPod = pods.find((item) => item.name === pod);
+    if (!selectedPod?.containers.some((item) => item.name === container)) setContainer(selectedPod?.containers[0]?.name ?? "");
+  }, [container, pod, pods]);
+
+  if (pods.length === 0) return <p className="text-[var(--mut)]">{t("No pods available to stream logs from.")}</p>;
+
+  const start = async () => {
+    if (startingRef.current) return; // re-entrancy guard: rapid clicks must not leak a second stream
+    startingRef.current = true;
+    try {
+      stopStream(streamRef);
+      if (!pod) return;
+      setPaused(false);
+      setStatus(t("Streaming..."));
+      // EventSource can't send an Authorization header, so mint a one-shot token (cookie+CSRF) first.
+      const tokenRes = await http.logToken(serviceName);
+      if (tokenRes.status !== 200 || !tokenRes.body.token) {
+        setStatus(tokenRes.body.error ?? t("Failed to start stream"));
+        return;
+      }
+      const url = `/api/services/${encodeURIComponent(serviceName)}/logs?logToken=${encodeURIComponent(tokenRes.body.token)}&pod=${encodeURIComponent(pod)}${container ? `&container=${encodeURIComponent(container)}` : ""}&tail=200`;
+      const eventSource = new EventSource(url);
+      streamRef.current = eventSource;
+      const append = (text: string, kind: "stdout" | "stderr") => setLines((current) => [...current, { text, kind }].slice(-500));
+      eventSource.addEventListener("stdout", (event) => append((event as MessageEvent<string>).data, "stdout"));
+      eventSource.addEventListener("stderr", (event) => append((event as MessageEvent<string>).data, "stderr"));
+      eventSource.addEventListener("end", (event) => {
+        setStatus(`Stream ended (exit ${(event as MessageEvent<string>).data})`);
+        stopStream(streamRef);
+      });
+      eventSource.onerror = () => {
+        setStatus(t("Disconnected"));
+        stopStream(streamRef);
+      };
+    } catch {
+      setStatus(t("Failed to connect"));
+    } finally {
+      startingRef.current = false;
+    }
+  };
+
+  const togglePause = () => {
+    if (paused) {
+      void start();
+      return;
+    }
+    stopStream(streamRef);
+    setPaused(true);
+    setStatus(t("Paused."));
+  };
+
+  return (
+    <>
+      <div className="logs-toolbar">
+        <select className="hyper-input" aria-label={t("Pod")} value={pod} onChange={(event) => setPod(event.target.value)}>{pods.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select>
+        <select className="hyper-input" aria-label={t("Container")} value={container} onChange={(event) => setContainer(event.target.value)}>{(pods.find((item) => item.name === pod)?.containers || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select>
+        <AppButton onClick={start}><Activity size={15} />{t("Stream")}</AppButton>
+        <AppButton variant="ghost" onClick={togglePause}>{paused ? <Play size={15} /> : <Pause size={15} />}{paused ? t("Resume") : t("Pause")}</AppButton>
+        <AppButton variant="ghost" onClick={() => setWrap((current) => !current)}><WrapText size={15} />{t("Wrap")} {wrap ? t("on") : t("off")}</AppButton>
+        <span className="text-xs text-[var(--mut)]">{status}</span>
+      </div>
+      <pre ref={viewerRef} className={`log-viewer ${wrap ? "wrap" : "nowrap"}`} aria-live="polite">{lines.map((line, index) => <div className={line.kind === "stderr" ? "text-[#ffa198]" : ""} key={`${index}:${line.text}`}>{line.text}</div>)}</pre>
+    </>
+  );
+}
+
+function stopStream(ref: MutableRefObject<EventSource | null>) {
+  if (!ref.current) return;
+  ref.current.close();
+  ref.current = null;
+}
+
+function NetworkingInfo({ service }: { service: NetworkingService }) {
+  return <><Kv rows={[[t("Service"), <Tag>{service.name}</Tag>], [t("Type"), <Tag>{service.type}</Tag>], [t("Cluster IP"), service.clusterIP ? <Tag>{service.clusterIP}</Tag> : null], [t("External IPs"), service.externalIPs?.length ? service.externalIPs.map((ip) => <Tag key={ip}>{ip}</Tag>) : null]]} /><h4 className="detail-subtitle">{t("Ports")}</h4><ul className="detail-list">{service.ports.map((port) => <li key={`${port.protocol}:${port.port}:${port.name || ""}`}><Tag>{port.protocol} {port.port}</Tag>{port.targetPort !== null && port.targetPort !== undefined ? <><span>{t("to target")}</span><Tag>{String(port.targetPort)}</Tag></> : null}{port.nodePort ? <><span>{t("NodePort")}</span><Tag>{port.nodePort}</Tag></> : null}{port.name ? <span>({port.name})</span> : null}</li>)}</ul></>;
+}
+
+function PodsTable({ name, pods, openModal }: { name: string; pods: PodSummary[]; openModal: (modal: ModalState) => void }) {
+  return <div className="table-wrap"><table><thead><tr><th>{t("Name")}</th><th>{t("Status")}</th><th>{t("Pod IP")}</th><th>{t("Node")}</th><th>{t("Restarts")}</th><th>{t("Shell")}</th></tr></thead><tbody>{pods.map((pod) => { const restarts = pod.containers.reduce((sum, item) => sum + (item.restartCount || 0), 0); const ok = pod.phase === "Running" && pod.containers.every((item) => item.ready); const container = pod.containers[0]?.name; return <tr key={pod.name}><td><Tag>{pod.name}</Tag></td><td><Pill tone={ok ? "ok" : "warn"}>{pod.phase}</Pill></td><td>{pod.podIP ? <Tag>{pod.podIP}</Tag> : "-"}</td><td>{pod.nodeName || "-"}</td><td>{restarts}</td><td>{container ? <button className="icon-button" type="button" aria-label={`Open terminal for ${pod.name}`} onClick={() => openModal({ type: "terminal", name, pod: pod.name, container })}><SquareTerminal size={16} /></button> : "-"}</td></tr>; })}</tbody></table></div>;
+}
+
+function gateLabel(raw?: string | null): string {
+  if (!raw) return "";
+  try {
+    const g = JSON.parse(raw) as { ok: boolean; lastReason?: string };
+    return g.ok ? t("gate ✓") : `gate ✗ ${g.lastReason ?? ""}`;
+  } catch {
+    return "";
+  }
+}
+
+function DeploymentTable({ items }: { items: Deployment[] }) {
+  return <div className="table-wrap"><table><thead><tr><th>{t("Tag")}</th><th>{t("Status")}</th><th>{t("Started")}</th><th>{t("Message")}</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><Tag>{item.tag}</Tag>{item.action === "rollback" ? <Pill tone="warn">{t("rollback")}</Pill> : null}</td><td><Pill tone={item.status}>{item.status}</Pill></td><td>{fmtTs(item.started_at)}</td><td>{[item.message, gateLabel(item.health_gate_result)].filter(Boolean).join(" · ")}</td></tr>)}</tbody></table></div>;
+}
+
+function DetailSection({ title, children }: { title: string; children: ReactNode }) {
+  return <section className="detail-section"><h3>{title}</h3>{children}</section>;
+}
+
+function Kv({ rows }: { rows: [string, ReactNode | null][] }) {
+  return <dl className="kv-list">{rows.map(([key, value]) => <Fragment key={key}><dt>{key}</dt><dd>{value ?? <span className="text-[var(--mut)]">-</span>}</dd></Fragment>)}</dl>;
+}
