@@ -92,7 +92,9 @@ export function ServiceDetail({ name, services, clusterLabel, notify, onClose, s
     <div className="sheet-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <aside className="detail-sheet" role="dialog" aria-modal={!isObscured} aria-hidden={isObscured || undefined} aria-label={`${name} service details`}>
         <button className="hyper-button ghost sheet-close" type="button" aria-label={t("Close service details")} onClick={onClose}><X size={18} /></button>
-        {!service ? <><h2 className="dialog-title">{name}</h2><p className="text-[var(--mut)]">{t("Loading service details...")}</p></> : (
+        {!service ? (
+          <ServiceDetailSkeleton name={name} card={card} clusterLabel={clusterLabel} />
+        ) : (
           <ServiceDetailContent service={service} card={card} deployments={deployments} pods={pods} events={events} selector={selector} networking={networking} clusterLabel={clusterLabel} notify={notify} openModal={openModal} canRollback={canRollback} />
         )}
       </aside>
@@ -221,6 +223,90 @@ function ServiceDetailContent({ service, card, deployments, pods, events, select
 
 function ServiceVital({ icon, label, value, tone }: { icon: ReactNode; label: string; value: string; tone: "ok" | "bad" | "warn" | "acc" }) {
   return <div className={`service-vital ${tone}`}><span className="service-vital-icon">{icon}</span><span><small>{label}</small><strong>{value}</strong></span></div>;
+}
+
+function ServiceDetailSkeleton({ name, card, clusterLabel }: { name: string; card?: ServiceListItem; clusterLabel: (id: string) => string }) {
+  return (
+    <div className="service-detail" aria-busy="true">
+      <header className="service-detail-header">
+        <div className="service-detail-identity">
+          <div className="service-health-mark acc skeleton-pulse" aria-hidden="true"><Activity size={24} /></div>
+          <div className="service-detail-heading">
+            <span className="service-eyebrow">{t("Managed service")}</span>
+            <div className="service-title-line">
+              <h2>{name}</h2>
+              {card?.cluster ? <ClusterPill cluster={card.cluster} /> : <span className="skeleton skeleton-pill" />}
+            </div>
+            <p>
+              {card ? (
+                <>
+                  <span>{t("Namespace")} <code>{card.namespace}</code></span>
+                  <span aria-hidden="true">•</span>
+                  <span>{clusterLabel(card.clusterId)}</span>
+                  <span aria-hidden="true">•</span>
+                  <span className="text-[var(--mut)]">{t("Fetching live state…")}</span>
+                </>
+              ) : (
+                <span className="skeleton skeleton-line skeleton-line-half" />
+              )}
+            </p>
+          </div>
+        </div>
+        <div className="detail-toolbar" aria-hidden="true">
+          <span className="skeleton skeleton-btn" />
+          <span className="skeleton skeleton-btn skeleton-btn-ghost" />
+          <span className="skeleton skeleton-btn skeleton-btn-ghost" />
+        </div>
+      </header>
+
+      <div className="service-vitals" aria-hidden="true">
+        {[0, 1, 2, 3].map((i) => (
+          <div className="service-vital" key={i}>
+            <span className="skeleton skeleton-vital-icon" />
+            <span className="skeleton-vital-text">
+              <span className="skeleton skeleton-line skeleton-line-xs" />
+              <span className="skeleton skeleton-line skeleton-line-sm" />
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <nav className="service-view-switcher" aria-hidden="true">
+        <span className="skeleton skeleton-tab" />
+        <span className="skeleton skeleton-tab" />
+        <span className="skeleton skeleton-tab" />
+      </nav>
+
+      <div className="detail-layout" aria-hidden="true">
+        <div className="detail-column">
+          <SkeletonSection rows={4} />
+          <SkeletonSection rows={3} />
+        </div>
+        <div className="detail-column">
+          <SkeletonSection rows={3} />
+          <SkeletonSection rows={5} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SkeletonSection({ rows }: { rows: number }) {
+  return (
+    <section className="detail-section">
+      <header>
+        <div>
+          <span className="skeleton skeleton-section-icon" />
+          <span className="skeleton skeleton-line skeleton-line-title" />
+        </div>
+      </header>
+      <div className="detail-section-body">
+        {Array.from({ length: rows }, (_, i) => (
+          <span key={i} className={`skeleton skeleton-row ${i === rows - 1 ? "skeleton-row-last" : ""}`} />
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function ServiceViewButton({ active, icon, badge, children, onClick }: { active: boolean; icon: ReactNode; badge?: number; children: ReactNode; onClick: () => void }) {
