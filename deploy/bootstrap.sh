@@ -100,6 +100,7 @@ ensure_bun() {
   BUN_INSTALL=/opt/bun curl -fsSL https://bun.sh/install \
     | BUN_INSTALL=/opt/bun bash -s -- "bun-v${BUN_VERSION}" >/dev/null
   ln -sf /opt/bun/bin/bun /usr/local/bin/bun
+  ln -sf /opt/bun/bin/bunx /usr/local/bin/bunx
   /usr/local/bin/bun --version
 }
 
