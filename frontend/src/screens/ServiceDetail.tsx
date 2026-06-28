@@ -1,7 +1,12 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import {
   Activity,
+  AlertTriangle,
   ArrowUpCircle,
+  Box,
+  CheckCircle2,
+  CircleDot,
+  Clock3,
   Copy,
   ExternalLink,
   FileCode2,
@@ -9,11 +14,16 @@ import {
   Globe2,
   History,
   KeyRound,
+  LayoutDashboard,
+  ListTree,
+  Network,
   Pause,
   Play,
   Rocket,
+  Search,
   Settings,
   SquareTerminal,
+  Trash2,
   Undo2,
   WrapText,
   X,
@@ -105,33 +115,116 @@ function ServiceDetailContent({ service, card, deployments, pods, events, select
 }) {
   const name = service.name;
   const env = card?.env || { config: { exists: false, keys: [], path: "" }, secret: { exists: false, keys: [], path: "" } };
+  const [activeView, setActiveView] = useState<"overview" | "runtime" | "configuration">("overview");
+  const totalRestarts = pods.reduce((total, pod) => total + pod.containers.reduce((sum, container) => sum + (container.restartCount || 0), 0), 0);
+  const unhealthyPods = pods.filter((pod) => podStatusPill(pod).tone === "bad");
+  const warningEvents = events.filter((event) => event.type === "Warning");
+  const endpoints = getEndpoints(networking);
+  const workloadReady = Boolean(card?.cluster && card.cluster.replicas > 0 && card.cluster.readyReplicas === card.cluster.replicas);
+
   return (
-    <>
-      <h2 className="dialog-title">{name}</h2>
-      <p className="text-[var(--mut)]">{t("Namespace")} <code>{service.namespace}</code> · {t("Registered in Celeste Hyper")}</p>
+    <div className="service-detail">
+      <header className="service-detail-header">
+        <div className="service-detail-identity">
+          <div className={`service-health-mark ${workloadReady ? "ok" : "bad"}`} aria-hidden="true">
+            {workloadReady ? <CheckCircle2 size={24} /> : <AlertTriangle size={24} />}
+          </div>
+          <div className="service-detail-heading">
+            <span className="service-eyebrow">{t("Managed service")}</span>
+            <div className="service-title-line">
+              <h2>{name}</h2>
+              <ClusterPill cluster={card?.cluster ?? null} />
+            </div>
+            <p>
+              <span>{t("Namespace")} <code>{service.namespace}</code></span>
+              <span aria-hidden="true">•</span>
+              <span>{clusterLabel(service.clusterId)}</span>
+              <span aria-hidden="true">•</span>
+              <span>{t("Registered in Celeste Hyper")}</span>
+            </p>
+          </div>
+        </div>
+        <div className="detail-toolbar">
+          <AppButton onClick={() => openModal({ type: "deploy", name })}><Rocket size={15} />{t("Deploy")}</AppButton>
+          {canRollback ? <AppButton variant="ghost" onClick={() => openModal({ type: "rollback", name })}><Undo2 size={15} />{t("Rollback")}</AppButton> : null}
+          <AppButton variant="ghost" onClick={() => openModal({ type: "service-settings", name })}><Settings size={15} />{t("Settings")}</AppButton>
+          <AppButton variant="ghost" onClick={() => openModal({ type: "history", name })}><History size={15} />{t("History")}</AppButton>
+        </div>
+      </header>
+
       <AutoRollbackBanner name={name} notify={notify} />
-      <div className="detail-toolbar">
-        <AppButton onClick={() => openModal({ type: "deploy", name })}><Rocket size={15} />{t("Deploy")}</AppButton>
-        {canRollback ? <AppButton variant="ghost" onClick={() => openModal({ type: "rollback", name })}><Undo2 size={15} />{t("Rollback")}</AppButton> : null}
-        <AppButton variant="ghost" onClick={() => openModal({ type: "env", name, kind: "config" })}><FileCode2 size={15} />config.env</AppButton>
-        <AppButton variant="ghost" onClick={() => openModal({ type: "env", name, kind: "secret" })}><KeyRound size={15} />secret.env</AppButton>
-        <AppButton variant="ghost" onClick={() => openModal({ type: "service-settings", name })}><Settings size={15} />{t("Settings")}</AppButton>
-        <AppButton variant="ghost" onClick={() => openModal({ type: "history", name })}><History size={15} />{t("History")}</AppButton>
+
+      <div className="service-vitals" aria-label={t("Service health summary")}>
+        <ServiceVital icon={<Box size={17} />} label={t("Workload")} tone={workloadReady ? "ok" : "bad"} value={card?.cluster ? `${card.cluster.readyReplicas} / ${card.cluster.replicas} ${t("ready")}` : t("Not found")} />
+        <ServiceVital icon={<CircleDot size={17} />} label={t("Pods")} tone={unhealthyPods.length ? "bad" : pods.length ? "ok" : "warn"} value={unhealthyPods.length ? `${unhealthyPods.length} ${t("unhealthy")}` : `${pods.length} ${t("total")}`} />
+        <ServiceVital icon={<Activity size={17} />} label={t("Restarts")} tone={totalRestarts ? "bad" : "ok"} value={String(totalRestarts)} />
+        <ServiceVital icon={<Network size={17} />} label={t("Endpoints")} tone={endpoints.length ? "acc" : "warn"} value={String(endpoints.length)} />
       </div>
-      <DetailSection title={t("Overview")}><Kv rows={[[t("Current tag"), card?.currentTag ? <Tag>{card.currentTag}</Tag> : null], [t("Cluster"), <Pill tone="acc" title={`Cluster id: ${service.clusterId}`}>{clusterLabel(service.clusterId)}</Pill>], [t("Deployed at"), card?.deployedAt ? fmtTs(card.deployedAt) : null], [t("Cluster status"), <ClusterPill cluster={card?.cluster ?? null} />], [t("Update available"), card?.newVersion ? <Pill tone="warn">{card.newVersion}</Pill> : null]]} /></DetailSection>
-      <DetailSection title={t("Source")}><SourceDetail service={service} /></DetailSection>
-      <DetailSection title={t("Cluster")}>{card?.cluster ? <><Kv rows={[[t("Kind"), <Tag>{card.cluster.kind}</Tag>], [t("Replicas"), `${card.cluster.readyReplicas} / ${card.cluster.replicas} ready`]]} /><h4 className="detail-subtitle">{t("Containers")}</h4><ul className="detail-list">{card.cluster.containers.map((container) => <li key={container.name}><Tag>{container.name}</Tag><span>{t("to")}</span><Tag>{container.image}</Tag></li>)}</ul></> : <p className="text-[var(--mut)]">{t("No matching workload found in the cluster.")}</p>}</DetailSection>
-      <DetailSection title={t("Open service")}><EndpointPanel service={networking} notify={notify} clusterId={service.clusterId} openModal={openModal} /></DetailSection>
-      <DetailSection title={t("Networking")}>{networking ? <NetworkingInfo service={networking} /> : <p className="text-[var(--mut)]">{t("No Kubernetes Service object was found in the namespace.")}</p>}</DetailSection>
-      <AutoscalingPanel name={name} openModal={openModal} />
-      <HelmPanel name={name} notify={notify} />
-      <DetailSection title={t("Pods")}>{pods.length ? <PodsTable name={name} pods={pods} openModal={openModal} /> : <p className="text-[var(--mut)]">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}</DetailSection>
-      <DetailSection title={t("Events")}>{events.length ? <EventsTable items={events} /> : <p className="text-[var(--mut)]">{t("No recent events for pods backing this service.")}</p>}</DetailSection>
-      <DetailSection title={t("Live logs")}><LogsPanel serviceName={name} pods={pods} /></DetailSection>
-      <DetailSection title={t("Environment")}><EnvPanels env={env} /></DetailSection>
-      <DetailSection title={t("Recent deployments")}>{deployments.length ? <DeploymentTable items={deployments} /> : <p className="text-[var(--mut)]">{t("No deployments yet.")}</p>}</DetailSection>
-    </>
+
+      <nav className="service-view-switcher" aria-label={t("Service detail views")}>
+        <ServiceViewButton active={activeView === "overview"} icon={<LayoutDashboard size={15} />} onClick={() => setActiveView("overview")}>{t("Overview")}</ServiceViewButton>
+        <ServiceViewButton active={activeView === "runtime"} icon={<Activity size={15} />} badge={warningEvents.length || undefined} onClick={() => setActiveView("runtime")}>{t("Runtime")}</ServiceViewButton>
+        <ServiceViewButton active={activeView === "configuration"} icon={<Settings size={15} />} onClick={() => setActiveView("configuration")}>{t("Configuration")}</ServiceViewButton>
+      </nav>
+
+      {activeView === "overview" ? (
+        <div className="detail-layout">
+          <div className="detail-column">
+            <DetailSection icon={<LayoutDashboard size={16} />} title={t("Overview")}>
+              <Kv rows={[[t("Current tag"), card?.currentTag ? <Tag>{card.currentTag}</Tag> : null], [t("Cluster"), <Pill tone="acc" title={`Cluster id: ${service.clusterId}`}>{clusterLabel(service.clusterId)}</Pill>], [t("Deployed at"), card?.deployedAt ? fmtTs(card.deployedAt) : null], [t("Cluster status"), <ClusterPill cluster={card?.cluster ?? null} />], [t("Update available"), card?.newVersion ? <Pill tone="warn">{card.newVersion}</Pill> : null]]} />
+            </DetailSection>
+            <DetailSection icon={<Box size={16} />} title={t("Cluster")}>
+              {card?.cluster ? <><Kv rows={[[t("Kind"), <Tag>{card.cluster.kind}</Tag>], [t("Replicas"), `${card.cluster.readyReplicas} / ${card.cluster.replicas} ready`]]} /><h4 className="detail-subtitle">{t("Containers")}</h4><ul className="detail-list">{card.cluster.containers.map((container) => <li key={container.name}><Tag>{container.name}</Tag><span>{t("to")}</span><Tag>{container.image}</Tag></li>)}</ul></> : <p className="detail-empty">{t("No matching workload found in the cluster.")}</p>}
+            </DetailSection>
+            <AutoscalingPanel name={name} openModal={openModal} />
+            <HelmPanel name={name} notify={notify} />
+          </div>
+          <div className="detail-column">
+            <DetailSection icon={<Globe2 size={16} />} title={t("Open service")}><EndpointPanel service={networking} notify={notify} clusterId={service.clusterId} openModal={openModal} /></DetailSection>
+            <DetailSection icon={<Network size={16} />} title={t("Networking")}>{networking ? <NetworkingInfo service={networking} /> : <p className="detail-empty">{t("No Kubernetes Service object was found in the namespace.")}</p>}</DetailSection>
+            <DetailSection icon={<FileCode2 size={16} />} title={t("Source")}><SourceDetail service={service} /></DetailSection>
+          </div>
+        </div>
+      ) : null}
+
+      {activeView === "runtime" ? (
+        <div className="runtime-layout">
+          {unhealthyPods.length || warningEvents.length ? (
+            <div className="operations-alert" role="alert">
+              <AlertTriangle size={20} />
+              <div><strong>{t("Runtime needs attention")}</strong><span>{unhealthyPods.length} {t("unhealthy pods")} · {warningEvents.length} {t("warning events")} · {totalRestarts} {t("container restarts")}</span></div>
+            </div>
+          ) : null}
+          <DetailSection icon={<Box size={16} />} title={t("Pods")} meta={`${pods.length} ${t("total")}`}>
+            {pods.length ? <PodsTable name={name} pods={pods} openModal={openModal} /> : <p className="detail-empty">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}
+          </DetailSection>
+          <DetailSection icon={<ListTree size={16} />} title={t("Events")} meta={warningEvents.length ? `${warningEvents.length} ${t("warnings")}` : undefined}>
+            {events.length ? <EventsTable items={events} /> : <p className="detail-empty">{t("No recent events for pods backing this service.")}</p>}
+          </DetailSection>
+          <DetailSection icon={<SquareTerminal size={16} />} title={t("Live logs")}><LogsPanel serviceName={name} pods={pods} /></DetailSection>
+          <DetailSection icon={<Clock3 size={16} />} title={t("Recent deployments")}>{deployments.length ? <DeploymentTable items={deployments} /> : <p className="detail-empty">{t("No deployments yet.")}</p>}</DetailSection>
+        </div>
+      ) : null}
+
+      {activeView === "configuration" ? (
+        <div className="configuration-layout">
+          <div className="configuration-actions">
+            <AppButton onClick={() => openModal({ type: "env", name, kind: "config" })}><FileCode2 size={15} />{t("Edit")} config.env</AppButton>
+            <AppButton variant="ghost" onClick={() => openModal({ type: "env", name, kind: "secret" })}><KeyRound size={15} />{t("Edit")} secret.env</AppButton>
+          </div>
+          <DetailSection icon={<Settings size={16} />} title={t("Environment")}><EnvPanels env={env} /></DetailSection>
+        </div>
+      ) : null}
+    </div>
   );
+}
+
+function ServiceVital({ icon, label, value, tone }: { icon: ReactNode; label: string; value: string; tone: "ok" | "bad" | "warn" | "acc" }) {
+  return <div className={`service-vital ${tone}`}><span className="service-vital-icon">{icon}</span><span><small>{label}</small><strong>{value}</strong></span></div>;
+}
+
+function ServiceViewButton({ active, icon, badge, children, onClick }: { active: boolean; icon: ReactNode; badge?: number; children: ReactNode; onClick: () => void }) {
+  return <button className={active ? "active" : ""} type="button" aria-current={active ? "page" : undefined} onClick={onClick}>{icon}<span>{children}</span>{badge ? <span className="service-view-badge" aria-hidden="true">{badge}</span> : null}</button>;
 }
 
 function AutoRollbackBanner({ name, notify }: { name: string; notify: Notify }) {
@@ -355,9 +448,16 @@ function LogsPanel({ serviceName, pods }: { serviceName: string; pods: PodSummar
   const [lines, setLines] = useState<{ text: string; kind: "stdout" | "stderr" }[]>([]);
   const [wrap, setWrap] = useState(true);
   const [paused, setPaused] = useState(false);
+  const [query, setQuery] = useState("");
   const streamRef = useRef<EventSource | null>(null);
   const startingRef = useRef(false);
-  const viewerRef = useRef<HTMLPreElement | null>(null);
+  const viewerRef = useRef<HTMLDivElement | null>(null);
+  const visibleLines = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    return lines
+      .map((line, index) => ({ ...line, lineNumber: index + 1 }))
+      .filter((line) => !normalizedQuery || line.text.toLocaleLowerCase().includes(normalizedQuery));
+  }, [lines, query]);
 
   useEffect(() => () => stopStream(streamRef), []);
   useEffect(() => {
@@ -416,18 +516,52 @@ function LogsPanel({ serviceName, pods }: { serviceName: string; pods: PodSummar
     setStatus(t("Paused."));
   };
 
+  const copyLogs = async () => {
+    if (!visibleLines.length) return;
+    try {
+      await copyText(visibleLines.map((line) => line.text).join("\n"));
+      setStatus(t("Visible logs copied."));
+    } catch {
+      setStatus(t("Could not copy logs."));
+    }
+  };
+
+  const selectPod = (nextPod: string) => {
+    stopStream(streamRef);
+    setPaused(false);
+    setStatus(t("Idle."));
+    setPod(nextPod);
+  };
+
+  const selectContainer = (nextContainer: string) => {
+    stopStream(streamRef);
+    setPaused(false);
+    setStatus(t("Idle."));
+    setContainer(nextContainer);
+  };
+
   return (
-    <>
-      <div className="logs-toolbar">
-        <select className="hyper-input" aria-label={t("Pod")} value={pod} onChange={(event) => setPod(event.target.value)}>{pods.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select>
-        <select className="hyper-input" aria-label={t("Container")} value={container} onChange={(event) => setContainer(event.target.value)}>{(pods.find((item) => item.name === pod)?.containers || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select>
-        <AppButton onClick={start}><Activity size={15} />{t("Stream")}</AppButton>
-        <AppButton variant="ghost" onClick={togglePause}>{paused ? <Play size={15} /> : <Pause size={15} />}{paused ? t("Resume") : t("Pause")}</AppButton>
-        <AppButton variant="ghost" onClick={() => setWrap((current) => !current)}><WrapText size={15} />{t("Wrap")} {wrap ? t("on") : t("off")}</AppButton>
-        <span className="text-xs text-[var(--mut)]">{status}</span>
+    <div className="logs-console">
+      <div className="logs-source-bar">
+        <label><span>{t("Pod")}</span><select className="hyper-input" value={pod} onChange={(event) => selectPod(event.target.value)}>{pods.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+        <label><span>{t("Container")}</span><select className="hyper-input" value={container} onChange={(event) => selectContainer(event.target.value)}>{(pods.find((item) => item.name === pod)?.containers || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+        <div className="logs-stream-actions">
+          <AppButton onClick={start}><Activity size={15} />{t("Stream")}</AppButton>
+          <AppButton variant="ghost" disabled={!paused && status !== t("Streaming...")} onClick={togglePause}>{paused ? <Play size={15} /> : <Pause size={15} />}{paused ? t("Resume") : t("Pause")}</AppButton>
+        </div>
       </div>
-      <pre ref={viewerRef} className={`log-viewer ${wrap ? "wrap" : "nowrap"}`} aria-live="polite">{lines.map((line, index) => <div className={line.kind === "stderr" ? "text-[#ffa198]" : ""} key={`${index}:${line.text}`}>{line.text}</div>)}</pre>
-    </>
+      <div className="logs-utility-bar">
+        <span className="logs-status"><i className={status === t("Streaming...") ? "live" : ""} />{status}</span>
+        <label className="logs-search"><Search size={14} /><span className="sr-only">{t("Filter logs")}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("Filter logs")} /></label>
+        <span className="logs-line-count">{visibleLines.length} / {lines.length} {t("lines")}</span>
+        <button type="button" aria-label={t("Toggle line wrapping")} className={wrap ? "active" : ""} onClick={() => setWrap((current) => !current)}><WrapText size={15} /></button>
+        <button type="button" aria-label={t("Copy visible logs")} disabled={!visibleLines.length} onClick={() => void copyLogs()}><Copy size={15} /></button>
+        <button type="button" aria-label={t("Clear logs")} disabled={!lines.length} onClick={() => setLines([])}><Trash2 size={15} /></button>
+      </div>
+      <div ref={viewerRef} className={`log-viewer ${wrap ? "wrap" : "nowrap"}`} aria-live="polite">
+        {visibleLines.length ? visibleLines.map((line) => <div className={`log-line ${line.kind}`} key={`${line.lineNumber}:${line.text}`}><span>{line.lineNumber}</span><code>{line.text}</code></div>) : <div className="logs-empty"><SquareTerminal size={24} /><strong>{query ? t("No matching log lines") : t("Start the stream to inspect container output")}</strong><span>{query ? t("Try a different filter.") : t("The latest 200 lines will appear here in real time.")}</span></div>}
+      </div>
+    </div>
   );
 }
 
@@ -453,11 +587,31 @@ function podStatusPill(pod: PodSummary): { tone: "ok" | "warn" | "bad"; label: s
 }
 
 function PodsTable({ name, pods, openModal }: { name: string; pods: PodSummary[]; openModal: (modal: ModalState) => void }) {
-  return <div className="table-wrap"><table><thead><tr><th>{t("Name")}</th><th>{t("Status")}</th><th>{t("Pod IP")}</th><th>{t("Node")}</th><th>{t("Restarts")}</th><th>{t("Shell")}</th></tr></thead><tbody>{pods.map((pod) => { const restarts = pod.containers.reduce((sum, item) => sum + (item.restartCount || 0), 0); const status = podStatusPill(pod); const container = pod.containers[0]?.name; return <tr key={pod.name}><td><Tag>{pod.name}</Tag></td><td><Pill tone={status.tone} title={status.detail}>{status.label}</Pill></td><td>{pod.podIP ? <Tag>{pod.podIP}</Tag> : "-"}</td><td>{pod.nodeName || "-"}</td><td>{restarts}</td><td>{container ? <button className="icon-button" type="button" aria-label={`Open terminal for ${pod.name}`} onClick={() => openModal({ type: "terminal", name, pod: pod.name, container })}><SquareTerminal size={16} /></button> : "-"}</td></tr>; })}</tbody></table></div>;
+  return <div className="pod-list">{pods.map((pod) => { const restarts = pod.containers.reduce((sum, item) => sum + (item.restartCount || 0), 0); const status = podStatusPill(pod); const container = pod.containers[0]?.name; return (
+    <article className={`pod-row ${status.tone}`} key={pod.name}>
+      <span className="pod-status-dot" aria-hidden="true" />
+      <div className="pod-identity"><strong>{pod.name}</strong><span>{pod.containers.map((item) => item.name).join(", ")}</span></div>
+      <div className="pod-fact"><span>{t("Status")}</span><Pill tone={status.tone} title={status.detail}>{status.label}</Pill></div>
+      <div className="pod-fact"><span>{t("Pod IP")}</span><code>{pod.podIP || "—"}</code></div>
+      <div className="pod-fact"><span>{t("Node")}</span><strong>{pod.nodeName || "—"}</strong></div>
+      <div className={`pod-fact pod-restarts ${restarts ? "bad" : ""}`}><span>{t("Restarts")}</span><strong>{restarts}</strong></div>
+      {container ? <button className="icon-button" type="button" aria-label={`Open terminal for ${pod.name}`} onClick={() => openModal({ type: "terminal", name, pod: pod.name, container })}><SquareTerminal size={16} /></button> : null}
+    </article>
+  ); })}</div>;
 }
 
 function EventsTable({ items }: { items: K8sEvent[] }) {
-  return <div className="table-wrap"><table><thead><tr><th>{t("When")}</th><th>{t("Type")}</th><th>{t("Reason")}</th><th>{t("Pod")}</th><th>{t("Message")}</th></tr></thead><tbody>{items.map((ev, i) => <tr key={`${ev.involvedObject.name}:${ev.lastTimestamp ?? ""}:${i}`}><td>{fmtTs(ev.lastTimestamp ?? undefined)}{ev.count > 1 ? <> · <Tag>×{ev.count}</Tag></> : null}</td><td><Pill tone={ev.type === "Warning" ? "bad" : "ok"}>{ev.type}</Pill></td><td><Tag>{ev.reason}</Tag></td><td><Tag>{ev.involvedObject.name}</Tag></td><td>{ev.message}</td></tr>)}</tbody></table></div>;
+  return <ol className="event-list">{items.map((event, index) => {
+    const warning = event.type === "Warning";
+    return <li className={warning ? "warning" : "normal"} key={`${event.involvedObject.name}:${event.lastTimestamp ?? ""}:${index}`}>
+      <span className="event-marker">{warning ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}</span>
+      <div className="event-content">
+        <div className="event-heading"><strong>{event.reason}</strong><Pill tone={warning ? "bad" : "ok"}>{event.type}</Pill>{event.count > 1 ? <Tag>×{event.count}</Tag> : null}<time>{fmtTs(event.lastTimestamp ?? undefined)}</time></div>
+        <p>{event.message}</p>
+        <span className="event-object">{event.involvedObject.kind} · <code>{event.involvedObject.name}</code></span>
+      </div>
+    </li>;
+  })}</ol>;
 }
 
 function gateLabel(raw?: string | null): string {
@@ -474,8 +628,8 @@ function DeploymentTable({ items }: { items: Deployment[] }) {
   return <div className="table-wrap"><table><thead><tr><th>{t("Tag")}</th><th>{t("Status")}</th><th>{t("Started")}</th><th>{t("Message")}</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><Tag>{item.tag}</Tag>{item.action === "rollback" ? <Pill tone="warn">{t("rollback")}</Pill> : null}</td><td><Pill tone={item.status}>{item.status}</Pill></td><td>{fmtTs(item.started_at)}</td><td>{[item.message, gateLabel(item.health_gate_result)].filter(Boolean).join(" · ")}</td></tr>)}</tbody></table></div>;
 }
 
-function DetailSection({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="detail-section"><h3>{title}</h3>{children}</section>;
+function DetailSection({ title, icon, meta, children }: { title: string; icon?: ReactNode; meta?: string; children: ReactNode }) {
+  return <section className="detail-section"><header><div>{icon ? <span>{icon}</span> : null}<h3>{title}</h3></div>{meta ? <small>{meta}</small> : null}</header><div className="detail-section-body">{children}</div></section>;
 }
 
 function Kv({ rows }: { rows: [string, ReactNode | null][] }) {

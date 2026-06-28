@@ -12,6 +12,12 @@ curl -fsSL https://raw.githubusercontent.com/Celeste-inc/celeste-hyper/main/depl
 
 Idempotent — re-run the same command to pull the latest `main` and roll out the new build in place. Existing `/etc/celeste-hyper/config.json` and `/var/lib/celeste-hyper/state.sqlite` are preserved.
 
+## Update
+
+```bash
+ sudo INSTALL_KUBECTL=false bash -c 'cd /opt/celeste-hyper/source && git pull && bun install && bun run build:linux-x64 && install -m 0755 build/celeste-hyper-linux-x64 /opt/celeste-hyper/bin/celeste-hyper && systemctl restart celeste-hyper'
+``` 
+
 Common overrides:
 
 ```bash
