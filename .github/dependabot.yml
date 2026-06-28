@@ -9,7 +9,7 @@ updates:
         patterns: ["*"]
     open-pull-requests-limit: 5
 
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directory: /
     schedule:
       interval: weekly
@@ -18,7 +18,7 @@ updates:
         patterns: ["*"]
     open-pull-requests-limit: 5
 
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directory: /frontend
     schedule:
       interval: weekly
