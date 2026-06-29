@@ -109,6 +109,10 @@ export class ExecSession {
   private async pump(stream: ReadableStream<Uint8Array> | null): Promise<void> {
     if (!stream) return;
     const reader = stream.getReader();
+    // Decode bytes to UTF-8 strings before sending: Bun's WS will JSON.stringify a raw Uint8Array
+    // ({"0":47,"1":32,…}) instead of sending a binary frame, which xterm then renders literally.
+    // Terminal output is text, so a text frame is the right wire shape anyway.
+    const decoder = new TextDecoder("utf-8", { fatal: false });
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -117,7 +121,7 @@ export class ExecSession {
           this.bytesSent += value.byteLength;
           if (this.bytesSent > this.maxBytes) break; // runaway output → teardown below
           this.touch();
-          this.socket.send(value);
+          this.socket.send(decoder.decode(value, { stream: true }));
         }
       }
     } catch {

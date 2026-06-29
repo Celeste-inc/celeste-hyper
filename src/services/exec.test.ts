@@ -57,9 +57,16 @@ function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
 }
 function fakeSocket() {
   const sent: string[] = [];
+  const sentRaw: Array<string | Uint8Array> = [];
   let closed = false;
-  const socket: ExecSocket = { send: (d) => sent.push(typeof d === "string" ? d : new TextDecoder().decode(d)), close: () => (closed = true) };
-  return { socket, sent, isClosed: () => closed };
+  const socket: ExecSocket = {
+    send: (d) => {
+      sentRaw.push(d);
+      sent.push(typeof d === "string" ? d : new TextDecoder().decode(d));
+    },
+    close: () => (closed = true),
+  };
+  return { socket, sent, sentRaw, isClosed: () => closed };
 }
 function fakeProc(stdout: ReadableStream<Uint8Array> | null, exited: Promise<number>): ExecProc & { stdinWrites: string[]; killed: () => boolean } {
   let killed = false;
@@ -84,6 +91,16 @@ describe("ExecSession", () => {
     await new Promise((r) => setTimeout(r, 20)); // let the stdout pump drain
     expect(sent.join("")).toBe("hello world\n");
     expect(proc.stdinWrites).toEqual(["ls -la\n"]);
+  });
+
+  it("sends stdout as decoded UTF-8 strings (Bun WS would JSON.stringify a Uint8Array)", async () => {
+    const { socket, sentRaw } = fakeSocket();
+    const proc = fakeProc(streamOf(["/ # "]), new Promise<number>(() => {}));
+    new ExecSession(socket, proc);
+    await new Promise((r) => setTimeout(r, 20));
+    // Every frame on the wire must be a string — never a raw Uint8Array.
+    for (const frame of sentRaw) expect(typeof frame).toBe("string");
+    expect((sentRaw[0] as string)).toBe("/ # ");
   });
 
   it("kills the child and closes the socket when the client disconnects", () => {
