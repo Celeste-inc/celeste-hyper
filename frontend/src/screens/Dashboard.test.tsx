@@ -25,6 +25,8 @@ function renderDashboard(over: Partial<Parameters<typeof Dashboard>[0]> = {}) {
       onCheckCluster={() => {}}
       onBrowseCrds={() => {}}
       onAddService={() => {}}
+      onBrowseTemplates={() => {}}
+      onManageRegistries={() => {}}
       onAdopt={() => {}}
       infrastructure={[]}
       onReclassify={() => {}}

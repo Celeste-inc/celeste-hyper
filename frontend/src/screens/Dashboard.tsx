@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Activity, ArrowUpRight, Boxes, CheckCircle2, ChevronDown, Compass, Layers, Plus, Server, TriangleAlert } from "lucide-react";
+import { Activity, ArrowUpRight, Boxes, CheckCircle2, ChevronDown, Compass, KeyRound, LayoutTemplate, Layers, Plus, Server, TriangleAlert } from "lucide-react";
 import type { Cluster, ServiceListItem, WorkloadSummary } from "../shared/types/api";
 import { t } from "../shared/i18n/t";
 import { AppButton } from "../components/atoms/AppButton";
@@ -20,6 +20,8 @@ interface DashboardProps {
   onCheckCluster: (id: string) => void;
   onBrowseCrds: (id: string) => void;
   onAddService: () => void;
+  onBrowseTemplates: () => void;
+  onManageRegistries: () => void;
   onAdopt: (workload: WorkloadSummary) => void;
   infrastructure: WorkloadSummary[];
   onReclassify: (workload: WorkloadSummary, category: "application" | "infrastructure") => void;
@@ -67,6 +69,8 @@ export function Dashboard(props: DashboardProps) {
         </div>
         <div className="page-actions">
           <AppButton variant="ghost" onClick={props.onAddCluster}><Server size={15} />{t("Add cluster")}</AppButton>
+          <AppButton variant="ghost" onClick={props.onBrowseTemplates}><LayoutTemplate size={15} />{t("Templates")}</AppButton>
+          <AppButton variant="ghost" onClick={props.onManageRegistries}><KeyRound size={15} />{t("Registries")}</AppButton>
           <AppButton onClick={props.onAddService}><Plus size={15} />{t("Add service")}</AppButton>
         </div>
       </section>

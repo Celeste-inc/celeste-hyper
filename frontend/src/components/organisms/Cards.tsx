@@ -71,7 +71,7 @@ export function ServiceCard({ service, clusterLabel, actions }: { service: Servi
         <span className="resource-content">
           <span className="resource-title">
             <strong>{service.name}</strong>
-            <ClusterPill cluster={service.cluster} />
+            <ClusterPill cluster={service.cluster} activeDeployment={service.activeDeployment} />
             {service.newVersion ? <Pill tone="warn">{t("Update")} {service.newVersion}</Pill> : null}
           </span>
           <span className="resource-facts">
@@ -144,9 +144,19 @@ export function SkewPill({ skew }: { skew?: Cluster["versionSkew"] }) {
   return <Pill tone="warn" title={skew.reason ?? undefined}><AlertTriangle size={12} />{t("Version skew")}</Pill>;
 }
 
-export function ClusterPill({ cluster }: { cluster: ServiceClusterSummary | null }) {
-  if (!cluster) return <Pill tone="warn"><AlertTriangle size={12} />{t("Not found in cluster")}</Pill>;
-  const tone = cluster.readyReplicas === cluster.replicas && cluster.replicas > 0 ? "ok" : cluster.replicas === 0 ? "warn" : "bad";
+import { computeServiceStatus } from "../../shared/utils/service-status";
+
+export function ClusterPill({
+  cluster,
+  activeDeployment,
+}: {
+  cluster: ServiceClusterSummary | null;
+  activeDeployment?: { status: string; started_at?: string; finished_at?: string | null } | null;
+}) {
+  if (!cluster && !activeDeployment) {
+    return <Pill tone="warn"><AlertTriangle size={12} />{t("Not found in cluster")}</Pill>;
+  }
+  const { tone, label } = computeServiceStatus({ cluster, activeDeployment: activeDeployment ?? null });
   const StatusIcon = tone === "ok" ? CheckCircle2 : tone === "warn" ? AlertTriangle : XCircle;
-  return <Pill tone={tone}><StatusIcon size={12} />{cluster.readyReplicas}/{cluster.replicas} {t("ready")}</Pill>;
+  return <Pill tone={tone}><StatusIcon size={12} />{label}</Pill>;
 }

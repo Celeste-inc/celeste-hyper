@@ -25,6 +25,11 @@ import { History } from "../screens/modals/History";
 import { Integrations } from "../screens/modals/Integrations";
 import { ServiceForm } from "../screens/modals/ServiceForm";
 import { Settings } from "../screens/modals/Settings";
+import { DeleteService } from "../screens/modals/DeleteService";
+import { Templates } from "../screens/modals/Templates";
+import { TemplateDeploy } from "../screens/modals/TemplateDeploy";
+import { Registries } from "../screens/modals/Registries";
+import { NetworkingEdit } from "../screens/modals/NetworkingEdit";
 import { Setup } from "../screens/modals/Setup";
 import { Terminal } from "../screens/modals/Terminal";
 import type { ModalActions, ModalState } from "../screens/types";
@@ -49,6 +54,22 @@ export function App() {
   const notify = useCallback((message: string, kind?: "bad") => setToast({ message, kind }), []);
   const closeModal = useCallback(() => setModal(null), []);
   const clusterLabel = useCallback((id: string) => clusters.find((cluster) => cluster.id === id)?.name ?? id, [clusters]);
+
+  // If the open detail sheet's service is gone (e.g. purged), close the sheet and any modal that
+  // referenced it so the operator doesn't stare at a dead row. The DeleteService modal stays open
+  // so the operator can read the "Service purged" success view before closing it themselves.
+  useEffect(() => {
+    if (!detailName) return;
+    const gone = !services.some((s) => s.name === detailName);
+    if (!gone) return;
+    setDetailName(null);
+    setModal((m) => {
+      if (!m) return null;
+      if (m.type === "service-delete") return m; // keep the success modal up
+      if ((m as { name?: string }).name === detailName) return null;
+      return m;
+    });
+  }, [services, detailName]);
 
   const load = useCallback(async () => {
     try {
@@ -164,6 +185,8 @@ export function App() {
         onCheckCluster={(id) => void onCheckCluster(id)}
         onBrowseCrds={(id) => setModal({ type: "crds", clusterId: id })}
         onAddService={() => setModal({ type: "service-create" })}
+        onBrowseTemplates={() => setModal({ type: "templates" })}
+        onManageRegistries={() => setModal({ type: "registries" })}
         onAdopt={(workload) => setModal({ type: "adopt", workload })}
         onReclassify={(workload, category) => void onReclassify(workload, category)}
       />
@@ -180,6 +203,11 @@ function renderModal(modal: ModalState, actions: ModalActions, clusters: Cluster
   if (modal.type === "service-create") return <ServiceForm clusters={clusters} {...actions} />;
   if (modal.type === "adopt") return <Adopt workload={modal.workload} clusters={clusters} {...actions} />;
   if (modal.type === "service-settings") return <Settings name={modal.name} {...actions} />;
+  if (modal.type === "service-delete") return <DeleteService name={modal.name} {...actions} />;
+  if (modal.type === "templates") return <Templates {...actions} />;
+  if (modal.type === "template-deploy") return <TemplateDeploy templateId={modal.templateId} clusters={clusters} {...actions} />;
+  if (modal.type === "registries") return <Registries {...actions} />;
+  if (modal.type === "networking-edit") return <NetworkingEdit name={modal.name} {...actions} />;
   if (modal.type === "deploy") return <Deploy name={modal.name} {...actions} />;
   if (modal.type === "rollback") return <Rollback name={modal.name} {...actions} />;
   if (modal.type === "deploy-progress") return <DeployProgress name={modal.name} tag={modal.tag} deploymentId={modal.deploymentId} {...actions} />;

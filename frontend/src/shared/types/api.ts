@@ -92,6 +92,112 @@ export interface HpaView {
   metricTypes: string[];
 }
 
+export interface PodMetric {
+  pod: string;
+  container?: string;
+  cpuMillicores: number;
+  memoryMi: number;
+}
+
+export interface PodMetricsSummary {
+  podCount: number;
+  totalCpuMillicores: number;
+  totalMemoryMi: number;
+  avgCpuMillicores: number;
+  avgMemoryMi: number;
+}
+
+export interface PodMetricsResponse {
+  pods: PodMetric[];
+  summary: PodMetricsSummary;
+}
+
+export interface PurgeFailure {
+  resource: string;
+  reason: string;
+}
+
+export interface PurgeResult {
+  removed: string[];
+  failed: PurgeFailure[];
+  planned: string[];
+}
+
+export interface DeleteServiceResponse {
+  ok: true;
+  purge: PurgeResult;
+}
+
+export interface TemplateEnvSpec {
+  key: string;
+  description?: string;
+  default?: string;
+  required?: boolean;
+  secret?: boolean;
+}
+
+export interface Template {
+  id: string;
+  label: string;
+  category: "web" | "cache" | "database" | "queue" | "proxy";
+  image: string;
+  defaultTag: string;
+  defaultPort: number;
+  portName: string;
+  description: string;
+  env: TemplateEnvSpec[];
+  recommendedAutoscale?: { minReplicas: number; maxReplicas: number; targetCPUUtilizationPercentage: number };
+}
+
+export interface DockerHubImage {
+  name: string;
+  description: string;
+  stars: number;
+  pulls: number;
+  official: boolean;
+}
+
+export interface TemplateDeployResponse {
+  service: { name: string };
+  deploymentId: number;
+  applied: Array<{ kind: string; name: string; namespace: string }>;
+  loadBalancer: { kind: string; replicas: number; message: string };
+}
+
+export type RegistryPresetId = "ghcr" | "acr" | "docker-hub" | "quay" | "harbor" | "ecr";
+
+export interface RegistryPreset {
+  id: RegistryPresetId;
+  label: string;
+  host: string;
+  hostExample: string;
+  requiresRegistry: boolean;
+  omitHostInImageRef: boolean;
+  auth: { usernameLabel: string; passwordLabel: string; hint?: string };
+}
+
+export interface RegistrySourceSummary {
+  id: string;
+  name: string;
+  presetId: RegistryPresetId;
+  registry?: string;
+  region?: string;
+  username: string;
+  email?: string;
+  secretConfigured: boolean;
+}
+
+export interface RegistrySourceInput {
+  id: string;
+  name: string;
+  presetId: RegistryPresetId;
+  registry?: string;
+  region?: string;
+  username: string;
+  password?: string;
+  email?: string;
+}
+
 export interface PreflightResult {
   applicable: boolean;
   ok?: boolean;
@@ -253,6 +359,7 @@ export type ServiceListItem = Service & {
   };
   cluster: ServiceClusterSummary | null;
   newVersion: string | null;
+  activeDeployment?: { status: string; started_at?: string; finished_at?: string | null } | null;
 };
 
 export interface ServicesResponse {

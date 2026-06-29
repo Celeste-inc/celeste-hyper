@@ -7,6 +7,13 @@ import type {
   ClusterHealth,
   CrdEntry,
   CrEntry,
+  DeleteServiceResponse,
+  DockerHubImage,
+  RegistryPreset,
+  RegistrySourceInput,
+  RegistrySourceSummary,
+  Template,
+  TemplateDeployResponse,
   Deployment,
   DiscoveryScanResult,
   EnvKind,
@@ -18,6 +25,7 @@ import type {
   MachineToken,
   NetworkingService,
   PodGroup,
+  PodMetricsResponse,
   PodSummary,
   PreflightResult,
   RegistryKind,
@@ -74,7 +82,11 @@ export const http = {
   createService: (body: unknown) => json<{ service: Service }>("/services", "POST", body),
   adoptService: (body: unknown) => json<{ service: Service }>("/services/adopt", "POST", body),
   updateService: (name: string, body: unknown) => json<{ service: Service }>(`/services/${encodeURIComponent(name)}`, "PATCH", body),
-  deleteService: (name: string) => api<{ ok: true }>(`/services/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  deleteService: (name: string, opts: { dryRun?: boolean } = {}) =>
+    api<DeleteServiceResponse>(
+      `/services/${encodeURIComponent(name)}${opts.dryRun ? "?dryRun=true" : ""}`,
+      { method: "DELETE" },
+    ),
   versions: (name: string) => api<VersionsResponse>(`/services/${encodeURIComponent(name)}/versions`),
   deployments: (name: string) => api<{ items: Deployment[] }>(`/services/${encodeURIComponent(name)}/deployments`),
   deployment: (id: number) => api<{ deployment: Deployment }>(`/deployments/${id}`),
@@ -105,6 +117,23 @@ export const http = {
   hpa: (name: string) => api<{ hpa: HpaView | null }>(`/services/${encodeURIComponent(name)}/hpa`),
   patchHpa: (name: string, body: { min?: number; max?: number; targetCPUUtilizationPercentage?: number }) =>
     json<{ hpa: HpaView | null }>(`/services/${encodeURIComponent(name)}/hpa`, "PATCH", body),
+  metrics: (name: string) => api<PodMetricsResponse>(`/services/${encodeURIComponent(name)}/metrics`),
+  patchNetworking: (
+    name: string,
+    body: {
+      portName?: string;
+      port?: number;
+      targetPort?: number | string;
+      nodePort?: number;
+      protocol?: "TCP" | "UDP";
+      type?: "ClusterIP" | "NodePort" | "LoadBalancer";
+    },
+  ) => json<{
+    ok: true;
+    service: { name: string; namespace: string; type: string; port: number; targetPort: number | string; nodePort: number | null; protocol: string };
+    workload: { kind: string; name: string; containerPort: number };
+    loadBalancer: { kind: string; message: string };
+  }>(`/services/${encodeURIComponent(name)}/networking`, "PATCH", body),
   helm: (name: string) => api<{ helm: HelmInfo | null }>("/services/" + encodeURIComponent(name) + "/helm"),
   helmUpgrade: (name: string, tag: string) => json<{ deploymentId: number; accepted: boolean }>("/services/" + encodeURIComponent(name) + "/helm/upgrade", "POST", { tag }),
   machineTokens: () => api<{ items: MachineToken[] }>("/machine-tokens"),
@@ -122,6 +151,31 @@ export const http = {
   setupServices: () => api<{ items: SetupServiceTemplate[] }>("/setup/services"),
   bootstrapSetup: (body: { clusterId: string; namespace: string; services: Array<Pick<SetupServiceTemplate, "name" | "r2Prefix" | "configEnv" | "secretEnv">>; r2SourceId?: string; writeEnvTemplates: boolean; overwriteEnvTemplates: boolean }) =>
     json<{ items: { service: string; action: string; env: { config: string; secret: string } }[] }>("/setup/bootstrap", "POST", body),
+  registryPresets: () => api<{ items: RegistryPreset[] }>("/registries/presets"),
+  registrySources: () => api<{ items: RegistrySourceSummary[] }>("/settings/registries"),
+  saveRegistrySource: (body: RegistrySourceInput) => json<{ source: RegistrySourceSummary }>("/settings/registries", "POST", body),
+  deleteRegistrySource: (id: string) => api<{ ok: true }>("/settings/registries/" + encodeURIComponent(id), { method: "DELETE" }),
+  applyRegistrySource: (id: string, body: { clusterId: string; namespace: string; secretName: string }) =>
+    json<{ ok: true; secretName: string; namespace: string; clusterId: string }>(
+      "/settings/registries/" + encodeURIComponent(id) + "/apply",
+      "POST",
+      body,
+    ),
+  templates: () => api<{ items: Template[] }>("/templates"),
+  searchDockerHub: (q: string) =>
+    api<{ items: DockerHubImage[] }>(`/templates/search?q=${encodeURIComponent(q)}`),
+  deployTemplate: (body: {
+    templateId: string;
+    name: string;
+    namespace: string;
+    clusterId: string;
+    replicas: number;
+    tag?: string;
+    env?: Record<string, string>;
+    serviceType?: "ClusterIP" | "NodePort" | "LoadBalancer";
+    autoscale?: { minReplicas: number; maxReplicas: number; targetCPUUtilizationPercentage: number };
+    registrySourceId?: string;
+  }) => json<TemplateDeployResponse>("/templates/deploy", "POST", body),
   r2Sources: () => api<{ items: R2Source[] }>("/settings/r2/sources"),
   saveR2Source: (body: { id: string; name: string; endpoint: string; bucket: string; region: string; accessKeyId: string; secretAccessKey?: string }) =>
     json<R2Source>("/settings/r2/sources", "POST", body),

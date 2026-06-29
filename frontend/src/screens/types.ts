@@ -8,6 +8,7 @@ export type ModalState =
   | { type: "service-create" }
   | { type: "adopt"; workload: WorkloadSummary }
   | { type: "service-settings"; name: string }
+  | { type: "service-delete"; name: string }
   | { type: "deploy"; name: string }
   | { type: "rollback"; name: string }
   | { type: "deploy-progress"; name: string; tag: string; deploymentId: number }
@@ -15,12 +16,16 @@ export type ModalState =
   | { type: "ingress-yaml"; clusterId: string; namespace: string; name: string }
   | { type: "crds"; clusterId: string }
   | { type: "hpa"; name: string; hpa: HpaView }
+  | { type: "networking-edit"; name: string }
   | { type: "history"; name: string }
   | { type: "terminal"; name: string; pod: string; container: string }
   | { type: "integrations" }
   | { type: "setup" }
   | { type: "discovery" }
-  | { type: "audit" };
+  | { type: "audit" }
+  | { type: "templates" }
+  | { type: "template-deploy"; templateId: string }
+  | { type: "registries" };
 
 export interface ModalActions {
   setModal: (modal: ModalState | null) => void;

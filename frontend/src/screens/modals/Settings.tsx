@@ -8,7 +8,7 @@ import { Pill } from "../../components/atoms/Pill";
 import type { ModalActions } from "../types";
 import { t } from "../../shared/i18n/t";
 
-export function Settings({ name, notify, closeModal, load }: ModalActions & { name: string }) {
+export function Settings({ name, notify, closeModal, setModal, load }: ModalActions & { name: string }) {
   const [service, setService] = useState<Service | null>(null);
   const [namespace, setNamespace] = useState("");
   const [r2Sources, setR2Sources] = useState<R2Source[]>([]);
@@ -115,16 +115,8 @@ export function Settings({ name, notify, closeModal, load }: ModalActions & { na
     await load();
   };
 
-  const remove = async () => {
-    if (!window.confirm(`Remove ${name} from Celeste Hyper? Cluster resources will not be changed.`)) return;
-    const result = await http.deleteService(name);
-    if (result.status >= 400) {
-      notify(apiError(result.body, result.status), "bad");
-      return;
-    }
-    closeModal();
-    notify(t("Service removed"));
-    await load();
+  const remove = () => {
+    setModal({ type: "service-delete", name });
   };
 
   return (
