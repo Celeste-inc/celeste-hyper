@@ -8,9 +8,23 @@ export function isValidK8sName(name: string): boolean {
  * argv for an interactive `kubectl exec` (v1 is non-tty `-i`; covers the common case without PTY
  * plumbing). pod/container are flag-injection-safe via the caller's leading-alnum `isValidK8sName`
  * (the trailing `--` is kubectl's required positional separator, not the flag-injection defense).
+ *
+ * The shell command tries `bash` → `sh` → `ash` so common minimal-image variants still get a shell,
+ * and the chosen shell is invoked with `-i` so PS1 prompts go to stderr (no PTY = no auto-prompt
+ * otherwise). When no shell exists in $PATH (distroless / scratch images), the wrapper exits with
+ * an informative message that the UI surfaces in the terminal pane.
  */
+export const EXEC_SHELL_LAUNCHER =
+  'if command -v bash >/dev/null 2>&1; then exec bash -i; ' +
+  'elif command -v sh >/dev/null 2>&1; then exec sh -i; ' +
+  'elif command -v ash >/dev/null 2>&1; then exec ash -i; ' +
+  'else echo "[celeste] no shell (bash/sh/ash) available in this image" 1>&2; exit 127; fi';
+
 export function buildExecArgs(namespace: string, pod: string, container: string): string[] {
-  return ["-n", namespace, "exec", "-i", pod, "-c", container, "--request-timeout=0", "--", "sh"];
+  return [
+    "-n", namespace, "exec", "-i", pod, "-c", container, "--request-timeout=0",
+    "--", "/bin/sh", "-c", EXEC_SHELL_LAUNCHER,
+  ];
 }
 
 /** Minimal duplex the WS adapter provides — decoupled from Elysia so the pump is unit-testable. */
@@ -62,7 +76,11 @@ export class ExecSession {
     this.idleTimer = setTimeout(() => this.teardown(), this.idleMs);
     void this.pump(proc.stdout);
     void this.pump(proc.stderr);
-    proc.exited.then(() => this.teardown()).catch(() => this.teardown());
+    // Wait one tick after exit so the in-flight pump reads (especially the "exec: no shell" /
+    // "no such container" stderr from kubectl) reach the client BEFORE the socket closes.
+    proc.exited
+      .then(() => setTimeout(() => this.teardown(), 50))
+      .catch(() => this.teardown());
   }
 
   /** Forward a client keystroke/paste to the child's stdin. */

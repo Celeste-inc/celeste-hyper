@@ -4,8 +4,14 @@ import { fakeClock } from "../lib/clock.ts";
 import { buildExecArgs, isValidK8sName, ExecSession, type ExecSocket, type ExecProc } from "./exec.ts";
 
 describe("buildExecArgs", () => {
-  it("builds an interactive non-tty exec with a -- separator", () => {
-    expect(buildExecArgs("prod", "web-abc", "app")).toEqual(["-n", "prod", "exec", "-i", "web-abc", "-c", "app", "--request-timeout=0", "--", "sh"]);
+  it("builds an interactive non-tty exec with a shell-fallback launcher", () => {
+    const args = buildExecArgs("prod", "web-abc", "app");
+    expect(args.slice(0, 9)).toEqual(["-n", "prod", "exec", "-i", "web-abc", "-c", "app", "--request-timeout=0", "--"]);
+    expect(args.slice(9, 11)).toEqual(["/bin/sh", "-c"]);
+    // The launcher tries bash → sh → ash and emits a clear error when none exist (UI-friendly).
+    expect(args[11]).toContain("exec bash -i");
+    expect(args[11]).toContain("exec sh -i");
+    expect(args[11]).toContain("no shell");
   });
 });
 

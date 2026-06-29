@@ -38,12 +38,37 @@ export function Terminal({ name, pod, container, notify, closeModal }: ModalActi
       const url = `${scheme}//${location.host}/api/services/${encodeURIComponent(name)}/exec?token=${encodeURIComponent(res.body.token)}`;
       const ws = new WebSocket(url);
       socket = ws;
+      ws.onopen = () => {
+        term.writeln(t("[connected — type a command and press Enter]"));
+      };
       ws.onmessage = (event: MessageEvent) => {
         if (typeof event.data === "string") return term.write(event.data);
         void (event.data as Blob).text().then((text) => term.write(text));
       };
-      term.onData((data) => ws.readyState === WebSocket.OPEN && ws.send(data));
+      // No PTY on the kubelet side ⇒ no remote echo. Echo locally so the operator sees what they're
+      // typing. Translate CR (xterm's Enter) to LF for sh's stdin; render BS visually as backspace +
+      // space + backspace so the cursor wipes the deleted glyph.
+      term.onData((data) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        for (const ch of data) {
+          if (ch === "\r") {
+            term.write("\r\n");
+            ws.send("\n");
+          } else if (ch === "" || ch === "\b") {
+            term.write("\b \b");
+            ws.send("\b");
+          } else if (ch === "") {
+            // Ctrl-C — forward verbatim; sh interprets the SIGINT byte on the next read.
+            term.write("^C\r\n");
+            ws.send(ch);
+          } else {
+            term.write(ch);
+            ws.send(ch);
+          }
+        }
+      });
       ws.onclose = () => term.writeln(t("\r\n[session closed]"));
+      ws.onerror = () => term.writeln(t("\r\n[connection error]"));
     });
 
     return () => {
