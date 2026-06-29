@@ -9,8 +9,12 @@ import { workloadKindFor, workloadNameFor } from "../services/model.ts";
 // to a safe image-tag charset (no leading `-`, no `,`/`=`/whitespace) to prevent argument injection.
 const UpgradeBody = z.object({ tag: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, "invalid image tag") });
 
-/** `helmCli` is a host capability probed once at boot; it applies to every cluster this binary serves. */
+/** `helmCli` is a host capability probed once at boot; re-probe if currently false so a helm install
+ *  done after Hyper started gets picked up without restarting the binary. */
 function helmCapable(deps: ApiDeps, clusterId: string): boolean {
+  const cached = Boolean(deps.capabilities.merged(clusterId).capabilities.helmCli?.value);
+  if (cached) return true;
+  deps.capabilities.refreshHost();
   return Boolean(deps.capabilities.merged(clusterId).capabilities.helmCli?.value);
 }
 

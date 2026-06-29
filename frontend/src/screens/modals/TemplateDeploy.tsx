@@ -146,17 +146,19 @@ export function TemplateDeploy({ templateId, clusters, notify, closeModal, load 
         <span className="text-[var(--mut)]" style={{ fontSize: 12 }}>{tpl.description}</span>
       </p>
 
-      <Field id="td-name" label={t("Service name")} value={name} onChange={setName} placeholder="my-app" />
-      <Field id="td-ns" label={t("Namespace")} value={namespace} onChange={setNamespace} />
-      <SelectField
-        id="td-cluster"
-        label={t("Cluster")}
-        value={clusterId}
-        onChange={setClusterId}
-        options={clusters.map((c) => ({ value: c.id, label: c.name }))}
-      />
-      <Field id="td-tag" label={t("Image tag")} value={tag} onChange={setTag} placeholder={tpl.defaultTag} />
-      <Field id="td-rep" label={t("Replicas")} value={replicas} onChange={setReplicas} />
+      <div className="template-deploy-grid">
+        <Field id="td-name" label={t("Service name")} value={name} onChange={setName} placeholder="my-app" />
+        <Field id="td-ns" label={t("Namespace")} value={namespace} onChange={setNamespace} />
+        <SelectField
+          id="td-cluster"
+          label={t("Cluster")}
+          value={clusterId}
+          onChange={setClusterId}
+          options={clusters.map((c) => ({ value: c.id, label: c.name }))}
+        />
+        <Field id="td-tag" label={t("Image tag")} value={tag} onChange={setTag} placeholder={tpl.defaultTag} />
+        <Field id="td-rep" label={t("Replicas")} value={replicas} onChange={setReplicas} />
+      </div>
 
       <SelectField
         id="td-reg"
@@ -181,27 +183,30 @@ export function TemplateDeploy({ templateId, clusters, notify, closeModal, load 
         ]}
       />
 
-      {tpl.env.map((e) => (
-        <Field
-          key={e.key}
-          id={`td-env-${e.key}`}
-          label={`${e.key}${e.required ? " *" : ""}${e.secret ? " (secret)" : ""}`}
-          value={envValues[e.key] ?? e.default ?? ""}
-          onChange={(v) => setEnvValues((prev) => ({ ...prev, [e.key]: v }))}
-          placeholder={e.description}
-        />
-      ))}
+      {tpl.env.length ? <h4 className="detail-subtitle">{t("Environment")}</h4> : null}
+      <div className="template-deploy-grid">
+        {tpl.env.map((e) => (
+          <Field
+            key={e.key}
+            id={`td-env-${e.key}`}
+            label={`${e.key}${e.required ? " *" : ""}${e.secret ? " (secret)" : ""}`}
+            value={envValues[e.key] ?? e.default ?? ""}
+            onChange={(v) => setEnvValues((prev) => ({ ...prev, [e.key]: v }))}
+            placeholder={e.description}
+          />
+        ))}
+      </div>
 
       <label className="settings-check" htmlFor="td-autoscale">
         <input id="td-autoscale" type="checkbox" checked={autoscale} onChange={(e) => setAutoscale(e.target.checked)} />
         <span>{t("Enable autoscaling (HPA)")}<br /><span className="text-[11px] text-[var(--mut)]">{t("Hyper provisions a HorizontalPodAutoscaler. The Service (LB) automatically routes to new pods as they come up.")}</span></span>
       </label>
       {autoscale ? (
-        <>
+        <div className="template-deploy-grid hpa-fields">
           <Field id="td-min" label={t("Min replicas")} value={hpaMin} onChange={setHpaMin} />
           <Field id="td-max" label={t("Max replicas")} value={hpaMax} onChange={setHpaMax} />
           <Field id="td-cpu" label={t("Target CPU %")} value={hpaCpu} onChange={setHpaCpu} />
-        </>
+        </div>
       ) : null}
 
       <div className="dialog-actions justify-between">

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
+import { ArrowRight, Search } from "lucide-react";
 import { http } from "../../shared/api/client";
 import type { DockerHubImage, Template } from "../../shared/types/api";
 import { AppButton } from "../../components/atoms/AppButton";
-import { Field } from "../../components/atoms/Field";
 import { Pill } from "../../components/atoms/Pill";
 import { Tag } from "../../components/atoms/Tag";
 import type { ModalActions } from "../types";
@@ -14,6 +14,7 @@ export function Templates({ setModal, closeModal }: ModalActions) {
   const [hubResults, setHubResults] = useState<DockerHubImage[]>([]);
   const [searching, setSearching] = useState(false);
   const [hubError, setHubError] = useState<string | null>(null);
+  const [searchedQuery, setSearchedQuery] = useState("");
 
   useEffect(() => {
     void http.templates().then((res) => {
@@ -31,62 +32,95 @@ export function Templates({ setModal, closeModal }: ModalActions) {
     if (res.status !== 200) {
       setHubError(res.body.error ?? `HTTP ${res.status}`);
       setHubResults([]);
+      setSearchedQuery(q);
       return;
     }
     setHubResults(res.body.items);
+    setSearchedQuery(q);
   };
 
   return (
-    <>
+    <div className="template-browser">
       <h2 className="dialog-title">{t("Deploy from template")}</h2>
       <p className="dialog-description">
         {t("Pick a curated public image or search Docker Hub. Hyper provisions the Deployment, a native LB (v1/Service), and an optional HPA.")}
       </p>
 
-      <h4 className="detail-subtitle">{t("Curated catalog")}</h4>
-      <ul className="detail-list" aria-label={t("Template catalog")}>
+      <form className="template-search" role="search" onSubmit={(event) => { event.preventDefault(); void search(); }}>
+        <label className="template-search-label" htmlFor="dh-q">{t("Search Docker Hub")}</label>
+        <div className="template-search-row">
+          <div className="input-with-icon">
+            <Search size={16} aria-hidden="true" />
+            <input
+              id="dh-q"
+              className="hyper-input"
+              type="search"
+              value={query}
+              placeholder="nginx, postgres, redis, …"
+              autoComplete="off"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <AppButton type="submit" disabled={searching || !query.trim()}>
+            {searching ? t("Searching…") : t("Search")}
+          </AppButton>
+        </div>
+        <span>{t("Search millions of public images without leaving the deployment flow.")}</span>
+      </form>
+
+      {hubError ? <p className="template-feedback bad" role="alert">{hubError}</p> : null}
+      {searchedQuery && !hubError ? (
+        <section className="template-results" aria-live="polite">
+          <div className="template-section-heading">
+            <div>
+              <h4>{t("Docker Hub results")}</h4>
+              <p>{hubResults.length ? `${hubResults.length} ${t("results for")} “${searchedQuery}”` : `${t("No results for")} “${searchedQuery}”`}</p>
+            </div>
+          </div>
+          {hubResults.length > 0 ? (
+            <ul className="template-grid" aria-label={t("Docker Hub results")}>
+              {hubResults.map((img) => (
+                <li className="template-card" key={img.name}>
+                  <div className="template-card-heading">
+                    <strong>{img.name}</strong>
+                    {img.official ? <Pill tone="acc">{t("official")}</Pill> : null}
+                  </div>
+                  <p>{img.description || "—"}</p>
+                  <div className="template-card-meta"><Tag>★ {img.stars}</Tag></div>
+                </li>
+              ))}
+            </ul>
+          ) : <div className="template-empty">{t("Try a broader image name or check the spelling.")}</div>}
+        </section>
+      ) : null}
+
+      <div className="template-section-heading">
+        <div>
+          <h4>{t("Curated catalog")}</h4>
+          <p>{t("Production-ready starting points with sensible defaults.")}</p>
+        </div>
+        <Pill tone="acc">{catalog.length} {t("templates")}</Pill>
+      </div>
+      <ul className="template-grid" aria-label={t("Template catalog")}>
         {catalog.map((tpl) => (
-          <li key={tpl.id} style={{ alignItems: "flex-start", flexDirection: "column", gap: 4 }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <li className="template-card curated" key={tpl.id}>
+            <div className="template-card-heading">
               <strong>{tpl.label}</strong>
               <Pill tone="acc">{tpl.category}</Pill>
+            </div>
+            <div className="template-card-meta">
               <Tag>{tpl.image}:{tpl.defaultTag}</Tag>
               <Tag>:{tpl.defaultPort}</Tag>
             </div>
-            <span className="text-[var(--mut)]" style={{ fontSize: 12 }}>{tpl.description}</span>
-            <AppButton onClick={() => setModal({ type: "template-deploy", templateId: tpl.id })}>
-              {t("Deploy")}
+            <p>{tpl.description}</p>
+            <AppButton className="template-deploy-button" onClick={() => setModal({ type: "template-deploy", templateId: tpl.id })}>
+              {t("Deploy")}<ArrowRight size={14} />
             </AppButton>
           </li>
         ))}
       </ul>
 
-      <h4 className="detail-subtitle">{t("Search Docker Hub")}</h4>
-      <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-        <div style={{ flex: 1 }}>
-          <Field id="dh-q" label={t("Image name")} value={query} onChange={setQuery} placeholder="nginx, postgres, redis, …" />
-        </div>
-        <AppButton onClick={search} disabled={searching || !query.trim()}>
-          {searching ? t("Searching…") : t("Search")}
-        </AppButton>
-      </div>
-      {hubError ? <p className="text-[var(--mut)]" role="alert">{hubError}</p> : null}
-      {hubResults.length > 0 ? (
-        <ul className="detail-list" aria-label={t("Docker Hub results")}>
-          {hubResults.map((img) => (
-            <li key={img.name} style={{ alignItems: "flex-start", flexDirection: "column", gap: 4 }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <strong>{img.name}</strong>
-                {img.official ? <Pill tone="acc">{t("official")}</Pill> : null}
-                <Tag>★ {img.stars}</Tag>
-              </div>
-              <span className="text-[var(--mut)]" style={{ fontSize: 12 }}>{img.description || "—"}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
       <div className="dialog-actions"><AppButton variant="ghost" onClick={closeModal}>{t("Close")}</AppButton></div>
-    </>
+    </div>
   );
 }

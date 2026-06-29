@@ -13,6 +13,7 @@ FROM oven/bun:1.3.14-alpine
 
 RUN apk add --no-cache curl ca-certificates bash && \
     KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)" && \
+    HELM_VERSION="v3.16.4" && \
     ARCH="$(uname -m)" && case "$ARCH" in \
       x86_64) KARCH=amd64 ;; \
       aarch64|arm64) KARCH=arm64 ;; \
@@ -21,6 +22,10 @@ RUN apk add --no-cache curl ca-certificates bash && \
     curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KARCH}/kubectl" -o /usr/local/bin/kubectl && \
     chmod +x /usr/local/bin/kubectl && \
     kubectl version --client=true --output=yaml | head -3 && \
+    curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${KARCH}.tar.gz" | tar -xz -C /tmp && \
+    mv "/tmp/linux-${KARCH}/helm" /usr/local/bin/helm && chmod +x /usr/local/bin/helm && \
+    rm -rf "/tmp/linux-${KARCH}" && \
+    helm version --short && \
     apk del curl
 
 WORKDIR /app

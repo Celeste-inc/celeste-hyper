@@ -236,24 +236,33 @@ export async function* logEvents(proc: LogProc, signal?: AbortSignal, clock: Clo
   }
 }
 
-/** Whether the cluster supports HPA v2, lazily probing once if it has never been checked (so a
- *  cold-start cluster isn't falsely 409'd before the poller's first capability tick runs). */
-async function hpaCapable(deps: ApiDeps, clusterId: string): Promise<boolean> {
+// Re-probe a cluster's capabilities when the cached answer is negative or older than this. Stops
+// the metrics/HPA panel from being permanently dark when metrics-server/api-services come online
+// after Hyper's first poll (cluster boot order race).
+const STALE_NEGATIVE_MS = 30_000;
+
+async function capabilityValue(
+  deps: ApiDeps,
+  clusterId: string,
+  key: "hpaV2" | "metricsServerV1Beta1",
+): Promise<boolean> {
   let merged = deps.capabilities.merged(clusterId);
-  if (merged.lastCheckedAt === null) {
+  const cached = merged.capabilities[key]?.value === true;
+  const lastCheckedAt = merged.lastCheckedAt ? Date.parse(merged.lastCheckedAt) : null;
+  const stale = lastCheckedAt === null || (!cached && deps.clock.now() - lastCheckedAt > STALE_NEGATIVE_MS);
+  if (stale) {
     await deps.capabilities.refreshCluster(clusterId);
     merged = deps.capabilities.merged(clusterId);
   }
-  return Boolean(merged.capabilities.hpaV2?.value);
+  return merged.capabilities[key]?.value === true;
+}
+
+async function hpaCapable(deps: ApiDeps, clusterId: string): Promise<boolean> {
+  return capabilityValue(deps, clusterId, "hpaV2");
 }
 
 async function metricsCapable(deps: ApiDeps, clusterId: string): Promise<boolean> {
-  let merged = deps.capabilities.merged(clusterId);
-  if (merged.lastCheckedAt === null) {
-    await deps.capabilities.refreshCluster(clusterId);
-    merged = deps.capabilities.merged(clusterId);
-  }
-  return Boolean(merged.capabilities.metricsServerV1Beta1?.value);
+  return capabilityValue(deps, clusterId, "metricsServerV1Beta1");
 }
 
 export const serviceOpsRoutes = (deps: ApiDeps) => {
