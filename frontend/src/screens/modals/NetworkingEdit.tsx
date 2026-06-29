@@ -16,6 +16,7 @@ export function NetworkingEdit({ name, notify, closeModal, load }: ModalActions 
   const [targetPort, setTargetPort] = useState("");
   const [nodePort, setNodePort] = useState("");
   const [externalIPs, setExternalIPs] = useState("");
+  const [suggestedIPs, setSuggestedIPs] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
 
@@ -33,6 +34,18 @@ export function NetworkingEdit({ name, notify, closeModal, load }: ModalActions 
           setNodePort(first.nodePort != null ? String(first.nodePort) : "");
         }
         setExternalIPs((svc.externalIPs ?? []).join("\n"));
+        // Pull candidate IPs from the existing endpoints — anything that's a NodePort URL contains the
+        // node's IP and is reachable from the operator's network. Dedup + filter junk.
+        const seen = new Set<string>();
+        for (const ep of svc.endpoints ?? []) {
+          const m = ep.url.match(/^https?:\/\/([^:/]+)/);
+          if (!m) continue;
+          const host = m[1]!;
+          if (host === "localhost" || host === "127.0.0.1" || host.startsWith("10.43.")) continue; // skip k8s ClusterIPs
+          if (seen.has(host)) continue;
+          seen.add(host);
+        }
+        setSuggestedIPs([...seen]);
       }
     });
   }, [name]);
@@ -102,11 +115,27 @@ export function NetworkingEdit({ name, notify, closeModal, load }: ModalActions 
         label={t("External IPs (um por linha, opcional)")}
         value={externalIPs}
         onChange={setExternalIPs}
-        placeholder="192.168.1.10"
+        placeholder={suggestedIPs.length ? suggestedIPs.join("\n") : t("ex: 192.168.0.42 (descubra com: kubectl get nodes -o wide)")}
         multiline
       />
       <p className="text-[var(--mut)]" style={{ fontSize: 12, marginTop: -4 }}>
         {t("kube-proxy faz cada node escutar na Service port nessas IPs — funciona com qualquer porta (80, 8090, etc), sem o limite do NodePort. Deixe em branco para desativar.")}
+        {suggestedIPs.length ? (
+          <>
+            {" "}
+            <strong>{t("Sugestões do cluster")}:</strong> {suggestedIPs.map((ip) => (
+              <button
+                key={ip}
+                type="button"
+                className="ip-suggestion"
+                style={{ background: "transparent", border: "1px solid var(--mut)", borderRadius: 4, padding: "1px 6px", margin: "0 4px", cursor: "pointer", fontSize: 11 }}
+                onClick={() => setExternalIPs((curr) => (curr.includes(ip) ? curr : (curr ? curr + "\n" : "") + ip))}
+              >
+                {ip}
+              </button>
+            ))}
+          </>
+        ) : null}
       </p>
 
       {info ? <p className="text-[var(--mut)]" style={{ fontSize: 12 }}>{info}</p> : null}
