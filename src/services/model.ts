@@ -36,6 +36,23 @@ export const HealthGateSchema = z.object({
   // accepted here rather than silently ignored. The gate uses Kubernetes readiness/restart signals.
 });
 
+// Sibling workloads (e.g. a worker Deployment alongside the primary API) that the operator wants
+// to see grouped under THIS service in the UI — same namespace + cluster as the parent. Purely
+// informational: hyper does not deploy or roll them out (the bundle's own manifests do that);
+// it only aggregates pods, events, and logs so the operator has a single page per logical app.
+//
+// Constraints kept narrow so a typo doesn't accidentally pull in unrelated cluster workloads:
+//   - same cluster + namespace as the parent (no cross-namespace grouping)
+//   - max 8 entries (prevents UI overload + bounds the kubectl fan-out per request)
+//   - kind: same set as RegistryPullSchema.workloadKind (Deployment | StatefulSet | DaemonSet)
+//   - containerName is optional; logs default to the workload's first container when absent.
+export const RelatedWorkloadSchema = z.object({
+  name: z.string().min(1).regex(ID_RE, "lowercase letters, digits, dot, dash"),
+  kind: z.enum(["Deployment", "StatefulSet", "DaemonSet"]).default("Deployment"),
+  containerName: z.string().min(1).regex(ID_RE, "lowercase letters, digits, dot, dash").optional(),
+});
+export type RelatedWorkload = z.infer<typeof RelatedWorkloadSchema>;
+
 // Minimal Service object the hyper provisions on the operator's behalf — covers the common
 // "expose this workload on port X" case without requiring a hand-written Service yaml in the
 // bundle. Set on a service to enable; omit to keep manifests authoritative.
@@ -70,6 +87,8 @@ const BaseService = {
   autoRedeployOnEnv: z.boolean().optional(),
   // Optional Service object the hyper provisions in front of the workload; see ExposeSchema.
   expose: ExposeSchema.optional(),
+  // Sibling workloads aggregated under this service in the UI; see RelatedWorkloadSchema.
+  relatedWorkloads: z.array(RelatedWorkloadSchema).max(8).optional(),
 };
 
 export const R2BundleSchema = z.object({
@@ -130,4 +149,17 @@ export function workloadKindFor(svc: ServiceModel): string {
 
 export function containerNameFor(svc: ServiceModel): string {
   return svc.containerName ?? svc.name;
+}
+
+export function relatedWorkloadsFor(svc: ServiceModel): RelatedWorkload[] {
+  // Dedup by (kind, name) so a stray duplicate in the spec doesn't double-fetch pods/events/logs.
+  const seen = new Set<string>();
+  const out: RelatedWorkload[] = [];
+  for (const r of svc.relatedWorkloads ?? []) {
+    const key = `${r.kind}:${r.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
 }

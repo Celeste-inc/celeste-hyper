@@ -77,7 +77,19 @@ export const serviceRoutes = (deps: ApiDeps) =>
             };
           }),
         );
-        const discoverable = snap.cluster.filter((w) => !w.managed);
+        // Workloads declared as `relatedWorkloads` on a managed service are owned by that service
+        // (they show up grouped under it on the service page), so they must not also surface in
+        // the "discovered" list — that would let the operator adopt them as a separate service
+        // by mistake. Key on (clusterId, namespace, kind, name) which is what `snap.cluster` uses.
+        const adoptedRelated = new Set<string>();
+        for (const s of deps.registry.list()) {
+          for (const r of s.relatedWorkloads ?? []) {
+            adoptedRelated.add(`${s.clusterId}|${s.namespace}|${r.kind}|${r.name}`);
+          }
+        }
+        const isAdopted = (w: typeof snap.cluster[number]) =>
+          adoptedRelated.has(`${w.clusterId}|${w.namespace}|${w.kind}|${w.name}`);
+        const discoverable = snap.cluster.filter((w) => !w.managed && !isAdopted(w));
         const unmanaged = discoverable.filter((w) => w.category !== "infrastructure");
         const infrastructure = discoverable.filter((w) => w.category === "infrastructure");
         return { items, unmanaged, infrastructure, lastTickAt: snap.lastTickAt };

@@ -313,6 +313,15 @@ export interface PodSummary {
   containers: ContainerSummary[];
 }
 
+export interface PodGroup {
+  workload: string;
+  kind: string;
+  role: "primary" | "related";
+  selector: string;
+  pods: PodSummary[];
+  error?: string;
+}
+
 export interface K8sEvent {
   type: string;
   reason: string;

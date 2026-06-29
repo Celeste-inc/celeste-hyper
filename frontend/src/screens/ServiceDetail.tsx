@@ -28,7 +28,7 @@ import {
   WrapText,
   X,
 } from "lucide-react";
-import type { AutoRollbackStatus, Deployment, Endpoint, HelmInfo, HpaView, K8sEvent, NetworkingService, PodSummary, Service, ServiceListItem } from "../shared/types/api";
+import type { AutoRollbackStatus, Deployment, Endpoint, HelmInfo, HpaView, K8sEvent, NetworkingService, PodGroup, PodSummary, Service, ServiceListItem } from "../shared/types/api";
 import { http } from "../shared/api/client";
 import { apiError, fmtTs } from "../shared/utils/format";
 import { t } from "../shared/i18n/t";
@@ -54,6 +54,7 @@ export function ServiceDetail({ name, services, clusterLabel, notify, onClose, s
   const [service, setService] = useState<Service | null>(null);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [pods, setPods] = useState<PodSummary[]>([]);
+  const [podGroups, setPodGroups] = useState<PodGroup[]>([]);
   const [events, setEvents] = useState<K8sEvent[]>([]);
   const [selector, setSelector] = useState<string>();
   const [networking, setNetworking] = useState<NetworkingService | null>(null);
@@ -78,6 +79,7 @@ export function ServiceDetail({ name, services, clusterLabel, notify, onClose, s
         setService(serviceRes.body.service || null);
         setDeployments((depRes.body.items || []).slice(0, 8));
         setPods(podRes.body.items || []);
+        setPodGroups(podRes.body.groups || []);
         setEvents(evRes.body.items || []);
         setSelector(podRes.body.selector);
         setNetworking(netRes.body.service || null);
@@ -95,18 +97,19 @@ export function ServiceDetail({ name, services, clusterLabel, notify, onClose, s
         {!service ? (
           <ServiceDetailSkeleton name={name} card={card} clusterLabel={clusterLabel} />
         ) : (
-          <ServiceDetailContent service={service} card={card} deployments={deployments} pods={pods} events={events} selector={selector} networking={networking} clusterLabel={clusterLabel} notify={notify} openModal={openModal} canRollback={canRollback} />
+          <ServiceDetailContent service={service} card={card} deployments={deployments} pods={pods} podGroups={podGroups} events={events} selector={selector} networking={networking} clusterLabel={clusterLabel} notify={notify} openModal={openModal} canRollback={canRollback} />
         )}
       </aside>
     </div>
   );
 }
 
-function ServiceDetailContent({ service, card, deployments, pods, events, selector, networking, clusterLabel, notify, openModal, canRollback }: {
+function ServiceDetailContent({ service, card, deployments, pods, podGroups, events, selector, networking, clusterLabel, notify, openModal, canRollback }: {
   service: Service;
   card?: ServiceListItem;
   deployments: Deployment[];
   pods: PodSummary[];
+  podGroups: PodGroup[];
   events: K8sEvent[];
   selector?: string;
   networking: NetworkingService | null;
@@ -198,12 +201,12 @@ function ServiceDetailContent({ service, card, deployments, pods, events, select
             </div>
           ) : null}
           <DetailSection icon={<Box size={16} />} title={t("Pods")} meta={`${pods.length} ${t("total")}`}>
-            {pods.length ? <PodsTable name={name} pods={pods} openModal={openModal} /> : <p className="detail-empty">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}
+            {pods.length ? <PodsTable name={name} pods={pods} groups={podGroups} openModal={openModal} /> : <p className="detail-empty">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}
           </DetailSection>
           <DetailSection icon={<ListTree size={16} />} title={t("Events")} meta={warningEvents.length ? `${warningEvents.length} ${t("warnings")}` : undefined}>
             {events.length ? <EventsTable items={events} /> : <p className="detail-empty">{t("No recent events for pods backing this service.")}</p>}
           </DetailSection>
-          <DetailSection icon={<SquareTerminal size={16} />} title={t("Live logs")}><LogsPanel serviceName={name} pods={pods} /></DetailSection>
+          <DetailSection icon={<SquareTerminal size={16} />} title={t("Live logs")}><LogsPanel serviceName={name} pods={pods} groups={podGroups} /></DetailSection>
           <DetailSection icon={<Clock3 size={16} />} title={t("Recent deployments")}>{deployments.length ? <DeploymentTable items={deployments} /> : <p className="detail-empty">{t("No deployments yet.")}</p>}</DetailSection>
         </div>
       ) : null}
@@ -527,9 +530,16 @@ function SourceDetail({ service }: { service: Service }) {
   return <Kv rows={[[t("Source type"), <Pill tone="acc">{t("Registry pull")}</Pill>], [t("Image reference"), <Tag>{service.imageRef}</Tag>], [t("Workload kind"), <Tag>{service.workloadKind}</Tag>], [t("Workload name"), <Tag>{service.workloadName || service.name}</Tag>], [t("Container name"), <Tag>{service.containerName || service.name}</Tag>], [t("Image pull secret"), service.imagePullSecret ? <Tag>{service.imagePullSecret}</Tag> : null]]} />;
 }
 
-function LogsPanel({ serviceName, pods }: { serviceName: string; pods: PodSummary[] }) {
-  const [pod, setPod] = useState(pods[0]?.name ?? "");
-  const [container, setContainer] = useState(pods[0]?.containers[0]?.name ?? "");
+function LogsPanel({ serviceName, pods, groups }: { serviceName: string; pods: PodSummary[]; groups: PodGroup[] }) {
+  // Workload filter is hidden when there's only one workload (groups.length<=1) — keeps the UI
+  // identical to before for services without related workloads.
+  const nonEmptyGroups = groups.filter((g) => g.pods.length > 0);
+  const [workload, setWorkload] = useState(nonEmptyGroups[0]?.workload ?? "");
+  const visiblePods = nonEmptyGroups.length > 1
+    ? (nonEmptyGroups.find((g) => g.workload === workload)?.pods ?? [])
+    : pods;
+  const [pod, setPod] = useState(visiblePods[0]?.name ?? "");
+  const [container, setContainer] = useState(visiblePods[0]?.containers[0]?.name ?? "");
   const [status, setStatus] = useState(t("Idle."));
   const [lines, setLines] = useState<{ text: string; kind: "stdout" | "stderr" }[]>([]);
   const [wrap, setWrap] = useState(true);
@@ -551,9 +561,17 @@ function LogsPanel({ serviceName, pods }: { serviceName: string; pods: PodSummar
     if (viewer && !paused) viewer.scrollTop = viewer.scrollHeight;
   }, [lines, paused]);
   useEffect(() => {
-    const selectedPod = pods.find((item) => item.name === pod);
-    if (!selectedPod?.containers.some((item) => item.name === container)) setContainer(selectedPod?.containers[0]?.name ?? "");
-  }, [container, pod, pods]);
+    const selectedPod = visiblePods.find((item) => item.name === pod);
+    if (!selectedPod) {
+      // Switched workload (or pod was deleted) — auto-pick the first pod in the current scope.
+      setPod(visiblePods[0]?.name ?? "");
+      setContainer(visiblePods[0]?.containers[0]?.name ?? "");
+      return;
+    }
+    if (!selectedPod.containers.some((item) => item.name === container)) {
+      setContainer(selectedPod.containers[0]?.name ?? "");
+    }
+  }, [container, pod, visiblePods]);
 
   if (pods.length === 0) return <p className="text-[var(--mut)]">{t("No pods available to stream logs from.")}</p>;
 
@@ -629,8 +647,11 @@ function LogsPanel({ serviceName, pods }: { serviceName: string; pods: PodSummar
   return (
     <div className="logs-console">
       <div className="logs-source-bar">
-        <label><span>{t("Pod")}</span><select className="hyper-input" value={pod} onChange={(event) => selectPod(event.target.value)}>{pods.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
-        <label><span>{t("Container")}</span><select className="hyper-input" value={container} onChange={(event) => selectContainer(event.target.value)}>{(pods.find((item) => item.name === pod)?.containers || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+        {nonEmptyGroups.length > 1 ? (
+          <label><span>{t("Workload")}</span><select className="hyper-input" value={workload} onChange={(event) => { stopStream(streamRef); setPaused(false); setStatus(t("Idle.")); setWorkload(event.target.value); }}>{nonEmptyGroups.map((g) => <option key={`${g.kind}:${g.workload}`} value={g.workload}>{g.workload}{g.role === "primary" ? "" : ` (${t("worker")})`}</option>)}</select></label>
+        ) : null}
+        <label><span>{t("Pod")}</span><select className="hyper-input" value={pod} onChange={(event) => selectPod(event.target.value)}>{visiblePods.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+        <label><span>{t("Container")}</span><select className="hyper-input" value={container} onChange={(event) => selectContainer(event.target.value)}>{(visiblePods.find((item) => item.name === pod)?.containers || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
         <div className="logs-stream-actions">
           <AppButton onClick={start}><Activity size={15} />{t("Stream")}</AppButton>
           <AppButton variant="ghost" disabled={!paused && status !== t("Streaming...")} onClick={togglePause}>{paused ? <Play size={15} /> : <Pause size={15} />}{paused ? t("Resume") : t("Pause")}</AppButton>
@@ -672,8 +693,11 @@ function podStatusPill(pod: PodSummary): { tone: "ok" | "warn" | "bad"; label: s
   return { tone: ok ? "ok" : "warn", label: pod.phase };
 }
 
-function PodsTable({ name, pods, openModal }: { name: string; pods: PodSummary[]; openModal: (modal: ModalState) => void }) {
-  return <div className="pod-list">{pods.map((pod) => { const restarts = pod.containers.reduce((sum, item) => sum + (item.restartCount || 0), 0); const status = podStatusPill(pod); const container = pod.containers[0]?.name; return (
+function PodRow({ name, pod, openModal }: { name: string; pod: PodSummary; openModal: (modal: ModalState) => void }) {
+  const restarts = pod.containers.reduce((sum, item) => sum + (item.restartCount || 0), 0);
+  const status = podStatusPill(pod);
+  const container = pod.containers[0]?.name;
+  return (
     <article className={`pod-row ${status.tone}`} key={pod.name}>
       <span className="pod-status-dot" aria-hidden="true" />
       <div className="pod-identity"><strong>{pod.name}</strong><span>{pod.containers.map((item) => item.name).join(", ")}</span></div>
@@ -683,7 +707,31 @@ function PodsTable({ name, pods, openModal }: { name: string; pods: PodSummary[]
       <div className={`pod-fact pod-restarts ${restarts ? "bad" : ""}`}><span>{t("Restarts")}</span><strong>{restarts}</strong></div>
       {container ? <button className="icon-button" type="button" aria-label={`Open terminal for ${pod.name}`} onClick={() => openModal({ type: "terminal", name, pod: pod.name, container })}><SquareTerminal size={16} /></button> : null}
     </article>
-  ); })}</div>;
+  );
+}
+
+function PodsTable({ name, pods, groups, openModal }: { name: string; pods: PodSummary[]; groups: PodGroup[]; openModal: (modal: ModalState) => void }) {
+  // No groups (old API), or only the primary → render flat. Two or more groups → render with a
+  // subheader per workload so the operator sees which Deployment each pod belongs to.
+  const grouped = groups.filter((g) => g.pods.length > 0);
+  if (grouped.length <= 1) {
+    return <div className="pod-list">{pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} />)}</div>;
+  }
+  return (
+    <div className="pod-list">
+      {grouped.map((group) => (
+        <div key={`${group.kind}:${group.workload}`} className="pod-group">
+          <header className="pod-group-header">
+            <strong>{group.workload}</strong>
+            <Pill tone={group.role === "primary" ? "ok" : "acc"}>{group.role === "primary" ? t("primary") : t("worker")}</Pill>
+            <Tag>{group.kind}</Tag>
+            <small>{group.pods.length} {group.pods.length === 1 ? t("pod") : t("pods")}</small>
+          </header>
+          {group.pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} />)}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function EventsTable({ items }: { items: K8sEvent[] }) {

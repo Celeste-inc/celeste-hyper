@@ -7,7 +7,12 @@ import { withinScope } from "./scope.ts";
 import { ExecSession, isValidK8sName, type ExecSocket, type ExecProc } from "../services/exec.ts";
 import { log } from "../lib/logger.ts";
 import { type Clock, realClock } from "../lib/clock.ts";
-import { workloadNameFor, containerNameFor } from "../services/model.ts";
+import {
+  workloadNameFor,
+  containerNameFor,
+  relatedWorkloadsFor,
+  type ServiceModel,
+} from "../services/model.ts";
 import { findHpaForWorkload, summarizeHpa, validateHpaPatch, buildHpaPatch } from "../services/hpa.ts";
 import type { ClusterNode, IngressRule, K8sServiceInfo } from "../lib/k8s.ts";
 import type { DnsHint } from "../lib/dns-hint.ts";
@@ -220,33 +225,90 @@ async function hpaCapable(deps: ApiDeps, clusterId: string): Promise<boolean> {
 }
 
 export const serviceOpsRoutes = (deps: ApiDeps) => {
+  interface WorkloadTarget {
+    role: "primary" | "related";
+    workloadName: string;
+    kind: string;
+    /** Container override declared on the spec; logs default to this when ?container is omitted. */
+    containerName: string | undefined;
+    selector: string;
+    namespace: string;
+    clusterId: string;
+  }
+
+  /**
+   * Resolve every workload tracked under this service: the primary plus any `relatedWorkloads`
+   * declared in the spec. Each target gets its own pod selector (preferred via
+   * `getWorkloadSelector`, fallback to `app=<workloadName>`) so a `kubectl set selector` on the
+   * underlying Deployment is reflected without operator action.
+   *
+   * Caps the total list at 1 (primary) + 8 (`RelatedWorkloadSchema.max(8)`) to bound the per-call
+   * fan-out.
+   */
+  const findWorkloadTargets = async (svc: ServiceModel): Promise<WorkloadTarget[]> => {
+    const k8s = deps.pool.get(svc.clusterId);
+    if (!k8s) return [];
+    const primaryName = workloadNameFor(svc);
+    const primaryKind = svc.sourceType === "registry-pull" ? svc.workloadKind : "Deployment";
+    const targets: WorkloadTarget[] = [];
+    const seen = new Set<string>();
+    const push = async (role: "primary" | "related", name: string, kind: string, container?: string) => {
+      const key = `${kind}:${name}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const sel = (await k8s.getWorkloadSelector(kind, name, svc.namespace)) ?? `app=${name}`;
+      targets.push({
+        role,
+        workloadName: name,
+        kind,
+        containerName: container,
+        selector: sel,
+        namespace: svc.namespace,
+        clusterId: svc.clusterId,
+      });
+    };
+    await push("primary", primaryName, primaryKind, svc.containerName);
+    for (const r of relatedWorkloadsFor(svc)) await push("related", r.name, r.kind, r.containerName);
+    return targets;
+  };
+
+  /** Back-compat: return the primary target only, in the old `{selector, namespace, clusterId}` shape. */
   const findPodSelector = async (
     svcName: string,
   ): Promise<{ selector: string; namespace: string; clusterId: string } | null> => {
     const svc = deps.registry.get(svcName);
     if (!svc) return null;
-    const k8s = deps.pool.get(svc.clusterId);
-    if (!k8s) return null;
-    const workload = workloadNameFor(svc);
-    const kind = svc.sourceType === "registry-pull" ? svc.workloadKind : "Deployment";
-    const selector = await k8s.getWorkloadSelector(kind, workload, svc.namespace);
-    if (selector) return { selector, namespace: svc.namespace, clusterId: svc.clusterId };
-    return { selector: `app=${svc.name}`, namespace: svc.namespace, clusterId: svc.clusterId };
+    const targets = await findWorkloadTargets(svc);
+    const primary = targets.find((t) => t.role === "primary");
+    return primary ? { selector: primary.selector, namespace: primary.namespace, clusterId: primary.clusterId } : null;
   };
 
-  /** Confirm `pod`/`container` actually back THIS service (namespaces are shared — same guard as logs). */
-  const verifyPodContainer = async (svcName: string, pod: string, container: string): Promise<boolean> => {
-    const target = await findPodSelector(svcName);
-    if (!target) return false;
-    const k8s = deps.pool.get(target.clusterId);
+  /** Confirm `pod`/`container` actually back THIS service (any of its workloads). Namespaces are
+   *  shared, so without this guard a caller could read another service's logs/exec via ?pod=. */
+  const verifyPodContainer = async (
+    svcName: string,
+    pod: string,
+    container: string,
+  ): Promise<boolean> => {
+    const svc = deps.registry.get(svcName);
+    if (!svc) return false;
+    const targets = await findWorkloadTargets(svc);
+    if (targets.length === 0) return false;
+    const k8s = deps.pool.get(svc.clusterId);
     if (!k8s) return false;
-    try {
-      const pods = (await k8s.listPods(target.namespace, target.selector)) as Array<{ name?: string; containers?: Array<{ name?: string }> }>;
-      const match = pods.find((p) => p.name === pod);
-      return Boolean(match && match.containers?.some((c) => c.name === container));
-    } catch {
-      return false;
+    for (const t of targets) {
+      try {
+        const pods = (await k8s.listPods(t.namespace, t.selector)) as Array<{
+          name?: string;
+          containers?: Array<{ name?: string }>;
+        }>;
+        const match = pods.find((p) => p.name === pod);
+        if (match && match.containers?.some((c) => c.name === container)) return true;
+      } catch {
+        // try the next target rather than failing the whole verify on a single transient error
+      }
     }
+    return false;
   };
 
   // Live exec sessions, keyed by the WS connection (cleaned up on close). Capped to bound the number
@@ -260,32 +322,47 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
       async ({ params, status }) => {
         const svc = deps.registry.get(params.name);
         if (!svc) return status(404, { error: "service not found" });
-        const target = await findPodSelector(svc.name);
-        if (!target) return { items: [] };
+        const targets = await findWorkloadTargets(svc);
+        if (targets.length === 0) return { items: [], groups: [] };
         try {
-          const k8s = deps.pool.getOrThrow(target.clusterId);
-          const pods = await k8s.listPods(target.namespace, target.selector);
-          return { items: pods, selector: target.selector };
+          const k8s = deps.pool.getOrThrow(svc.clusterId);
+          // Fan-out: each workload's pod list is independent; serial would be N round-trips
+          // when N can be ≤ 9 (primary + 8 related). Pool's kubectl is sync-spawn anyway.
+          const groups = await Promise.all(
+            targets.map(async (t) => {
+              try {
+                const pods = await k8s.listPods(t.namespace, t.selector);
+                return { workload: t.workloadName, kind: t.kind, role: t.role, selector: t.selector, pods };
+              } catch (e) {
+                return { workload: t.workloadName, kind: t.kind, role: t.role, selector: t.selector, pods: [], error: (e as Error).message };
+              }
+            }),
+          );
+          // Back-compat flat list so existing UI keeps rendering until it adopts `groups`.
+          const items = groups.flatMap((g) => g.pods);
+          const primary = groups.find((g) => g.role === "primary");
+          return { items, groups, selector: primary?.selector };
         } catch (e) {
-          return { items: [], error: (e as Error).message };
+          return { items: [], groups: [], error: (e as Error).message };
         }
       },
-      { detail: { summary: "List pods backing a service", tags: ["service-ops"] } },
+      { detail: { summary: "List pods backing a service (grouped by workload)", tags: ["service-ops"] } },
     )
     .get(
       "/services/:name/events",
       async ({ params, status }) => {
         const svc = deps.registry.get(params.name);
         if (!svc) return status(404, { error: "service not found" });
-        const target = await findPodSelector(svc.name);
-        if (!target) return { items: [] };
+        const targets = await findWorkloadTargets(svc);
+        if (targets.length === 0) return { items: [] };
         try {
-          const k8s = deps.pool.getOrThrow(target.clusterId);
-          const pods = await k8s.listPods(target.namespace, target.selector);
-          const podNames = new Set(pods.map((p) => p.name));
-          const events = await k8s.listEvents(target.namespace);
-          // OR across names isn't expressible in kubectl --field-selector; filter client-side to
-          // events involving a pod that backs THIS service.
+          const k8s = deps.pool.getOrThrow(svc.clusterId);
+          // Pods come from all targets; events from the (shared) namespace are filtered client-side.
+          const podsPerTarget = await Promise.all(
+            targets.map((t) => k8s.listPods(t.namespace, t.selector).catch(() => [] as Array<{ name?: string }>)),
+          );
+          const podNames = new Set(podsPerTarget.flat().map((p) => p.name));
+          const events = await k8s.listEvents(svc.namespace);
           const items = events
             .filter((e) => e.involvedObject.kind === "Pod" && podNames.has(e.involvedObject.name))
             .sort((a, b) => (b.lastTimestamp ?? "").localeCompare(a.lastTimestamp ?? ""))
@@ -295,7 +372,7 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
           return { items: [], error: (e as Error).message };
         }
       },
-      { detail: { summary: "List Kubernetes events for pods backing a service", tags: ["service-ops"] } },
+      { detail: { summary: "List Kubernetes events for pods backing a service (all workloads)", tags: ["service-ops"] } },
     )
     .get(
       "/services/:name/networking",
@@ -356,25 +433,39 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
         const k8s = deps.pool.get(svc.clusterId);
         if (!k8s) return status(500, { error: `cluster '${svc.clusterId}' not configured` });
 
-        // Confine the stream to pods/containers that actually back THIS service. Namespaces are
-        // shared, so without this a caller could read any pod's logs via an arbitrary ?pod=.
+        // Confine the stream to pods/containers backing THIS service (primary OR related).
+        // Namespaces are shared, so without this a caller could read any pod's logs via ?pod=.
         let podMatch: { name?: string; containers?: Array<{ name?: string }> } | undefined;
+        let matchedTarget: WorkloadTarget | undefined;
         try {
-          const target = await findPodSelector(svc.name);
-          const pods = target
-            ? ((await k8s.listPods(target.namespace, target.selector)) as Array<{
-                name?: string;
-                containers?: Array<{ name?: string }>;
-              }>)
-            : [];
-          podMatch = pods.find((p) => p.name === pod);
+          const targets = await findWorkloadTargets(svc);
+          for (const t of targets) {
+            const pods = (await k8s.listPods(t.namespace, t.selector)) as Array<{
+              name?: string;
+              containers?: Array<{ name?: string }>;
+            }>;
+            const m = pods.find((p) => p.name === pod);
+            if (m) {
+              podMatch = m;
+              matchedTarget = t;
+              break;
+            }
+          }
         } catch {
           return status(502, { error: "unable to verify pod ownership" });
         }
-        if (!podMatch) return status(404, { error: "pod not found for this service" });
+        if (!podMatch || !matchedTarget) return status(404, { error: "pod not found for this service" });
 
         const containers = (podMatch.containers ?? []).map((c) => c.name).filter((n): n is string => !!n);
-        const container = query.container || containerNameFor(svc);
+        // Default container: explicit (related) override > primary's containerName > primary's name.
+        // If the related has no override and the pod has multiple containers, the operator must
+        // pass ?container — we don't guess.
+        const defaultContainer =
+          matchedTarget.role === "primary"
+            ? containerNameFor(svc)
+            : (matchedTarget.containerName ?? (containers.length === 1 ? containers[0] : ""));
+        const container = query.container || defaultContainer;
+        if (!container) return status(400, { error: "container query parameter required for multi-container pod" });
         if (query.container && containers.length > 0 && !containers.includes(query.container)) {
           return status(404, { error: "container not found in pod" });
         }

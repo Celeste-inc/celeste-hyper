@@ -17,6 +17,7 @@ import type {
   HpaView,
   MachineToken,
   NetworkingService,
+  PodGroup,
   PodSummary,
   PreflightResult,
   RegistryKind,
@@ -91,7 +92,7 @@ export const http = {
   logToken: (name: string) => json<{ token: string; expiresAt: string }>(`/services/${encodeURIComponent(name)}/logs/token`, "POST", {}),
   execToken: (name: string, pod: string, container: string) =>
     json<{ token: string; expiresAt: string }>("/services/" + encodeURIComponent(name) + "/exec/token", "POST", { pod, container }),
-  pods: (name: string) => api<{ items: PodSummary[]; selector?: string; error?: string }>(`/services/${encodeURIComponent(name)}/pods`),
+  pods: (name: string) => api<{ items: PodSummary[]; groups?: PodGroup[]; selector?: string; error?: string }>(`/services/${encodeURIComponent(name)}/pods`),
   events: (name: string) => api<{ items: K8sEvent[]; error?: string }>(`/services/${encodeURIComponent(name)}/events`),
   networking: (name: string) => api<{ service: NetworkingService | null; hint?: string }>(`/services/${encodeURIComponent(name)}/networking`),
   ingressYaml: (clusterId: string, namespace: string, name: string) =>
