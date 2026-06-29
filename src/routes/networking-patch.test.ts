@@ -88,6 +88,87 @@ describe("PATCH /api/services/:name/networking", () => {
     expect(r.status).toBe(404);
   });
 
+  it("422 with a helpful hint when nodePort is outside the k8s default range (30000-32767)", async () => {
+    const deps = setup({
+      k8s: {
+        getServiceInfo: async () => ({
+          name: "rmq",
+          namespace: "default",
+          type: "ClusterIP",
+          clusterIP: "10.0.0.1",
+          clusterIPs: ["10.0.0.1"],
+          externalIPs: [],
+          ports: [{ name: "amqp", port: 5672, targetPort: 5672, nodePort: null, protocol: "TCP" }],
+        }),
+      } as never,
+    });
+    const r = await call(buildApp(deps), "PATCH", "/api/services/rmq/networking", {
+      type: "NodePort",
+      nodePort: 8090,
+    });
+    expect(r.status).toBe(422);
+    expect(r.body.error).toContain("30000-32767");
+    expect(r.body.hint).toMatch(/externalIPs|LoadBalancer/);
+  });
+
+  it("accepts externalIPs to expose the port on host IPs without the NodePort range constraint", async () => {
+    const calls: string[][] = [];
+    const deps = setup({
+      k8s: {
+        getServiceInfo: async () => ({
+          name: "rmq",
+          namespace: "default",
+          type: "ClusterIP",
+          clusterIP: "10.0.0.1",
+          clusterIPs: ["10.0.0.1"],
+          externalIPs: [],
+          ports: [{ name: "amqp", port: 5672, targetPort: 5672, nodePort: null, protocol: "TCP" }],
+        }),
+        kubectl: async (args: string[]) => {
+          calls.push(args);
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      } as never,
+    });
+    const r = await call(buildApp(deps), "PATCH", "/api/services/rmq/networking", {
+      port: 8090,
+      externalIPs: ["192.168.1.10"],
+    });
+    expect(r.status).toBe(200);
+    const svcPatch = calls.find((a) => a.includes("patch") && a.includes("service"));
+    const body = JSON.parse(svcPatch![svcPatch!.indexOf("-p") + 1]!) as { spec: { externalIPs: string[]; ports: Array<{ port: number }> } };
+    expect(body.spec.externalIPs).toEqual(["192.168.1.10"]);
+    expect(body.spec.ports[0]!.port).toBe(8090);
+  });
+
+  it("clears externalIPs when an empty array is sent", async () => {
+    const calls: string[][] = [];
+    const deps = setup({
+      k8s: {
+        getServiceInfo: async () => ({
+          name: "rmq",
+          namespace: "default",
+          type: "ClusterIP",
+          clusterIP: "10.0.0.1",
+          clusterIPs: ["10.0.0.1"],
+          externalIPs: ["10.0.0.1"],
+          ports: [{ name: "amqp", port: 5672, targetPort: 5672, nodePort: null, protocol: "TCP" }],
+        }),
+        kubectl: async (args: string[]) => {
+          calls.push(args);
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      } as never,
+    });
+    const r = await call(buildApp(deps), "PATCH", "/api/services/rmq/networking", {
+      externalIPs: [],
+    });
+    expect(r.status).toBe(200);
+    const svcPatch = calls.find((a) => a.includes("patch") && a.includes("service"));
+    const body = JSON.parse(svcPatch![svcPatch!.indexOf("-p") + 1]!) as { spec: { externalIPs: null } };
+    expect(body.spec.externalIPs).toBeNull();
+  });
+
   it("422 when port is out of range", async () => {
     const deps = setup({
       k8s: {

@@ -5,6 +5,8 @@ export interface ServicePortPatchInput {
   protocol: "TCP" | "UDP";
   type: "ClusterIP" | "NodePort" | "LoadBalancer";
   nodePort?: number;
+  /** Optional list of host IPs the node should listen on for `port`. Empty array clears the field. */
+  externalIPs?: string[];
 }
 
 export interface ServicePortPatch {
@@ -17,6 +19,7 @@ export interface ServicePortPatch {
       protocol: "TCP" | "UDP";
       nodePort?: number;
     }>;
+    externalIPs?: string[] | null;
   };
 }
 
@@ -24,10 +27,14 @@ export interface ServicePortPatch {
  * Strategic-merge patch that mutates a single Service port (identified by `name`) without
  * recreating the whole array — so unrelated ports stay intact. `nodePort` is only emitted when the
  * Service type allows it; otherwise kubectl rejects the patch.
+ *
+ * `externalIPs` bypasses the NodePort 30000-32767 limit by asking kube-proxy to listen on any port
+ * on the named host IPs. An empty array clears the field (sent as `null` so strategic-merge wipes
+ * the existing list instead of leaving it untouched).
  */
 export function buildServicePortPatch(input: ServicePortPatchInput): ServicePortPatch {
   const wantsNodePort = input.type === "NodePort" || input.type === "LoadBalancer";
-  return {
+  const patch: ServicePortPatch = {
     spec: {
       type: input.type,
       ports: [
@@ -41,6 +48,10 @@ export function buildServicePortPatch(input: ServicePortPatchInput): ServicePort
       ],
     },
   };
+  if (input.externalIPs !== undefined) {
+    patch.spec.externalIPs = input.externalIPs.length ? input.externalIPs : null;
+  }
+  return patch;
 }
 
 export interface DeploymentContainerPortPatchInput {

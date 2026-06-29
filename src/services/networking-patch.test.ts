@@ -37,6 +37,35 @@ describe("buildServicePortPatch", () => {
     const patch = buildServicePortPatch({ portName: "amqp", port: 5673, targetPort: 5673, protocol: "TCP", type: "ClusterIP" });
     expect(patch.spec.ports[0]!.name).toBe("amqp");
   });
+
+  it("emits externalIPs when provided (escape hatch for ports outside the NodePort 30000-32767 range)", () => {
+    const patch = buildServicePortPatch({
+      portName: "http",
+      port: 8090,
+      targetPort: 80,
+      protocol: "TCP",
+      type: "ClusterIP",
+      externalIPs: ["192.168.1.10"],
+    });
+    expect(patch.spec.externalIPs).toEqual(["192.168.1.10"]);
+  });
+
+  it("clears externalIPs by sending null when given an empty array (strategic-merge wipe)", () => {
+    const patch = buildServicePortPatch({
+      portName: "http",
+      port: 80,
+      targetPort: 80,
+      protocol: "TCP",
+      type: "ClusterIP",
+      externalIPs: [],
+    });
+    expect(patch.spec.externalIPs).toBeNull();
+  });
+
+  it("omits externalIPs entirely when the field is not touched (preserves the stored list)", () => {
+    const patch = buildServicePortPatch({ portName: "http", port: 80, targetPort: 80, protocol: "TCP", type: "ClusterIP" });
+    expect("externalIPs" in patch.spec).toBe(false);
+  });
 });
 
 describe("buildDeploymentContainerPortPatch", () => {

@@ -15,6 +15,7 @@ export function NetworkingEdit({ name, notify, closeModal, load }: ModalActions 
   const [port, setPort] = useState("");
   const [targetPort, setTargetPort] = useState("");
   const [nodePort, setNodePort] = useState("");
+  const [externalIPs, setExternalIPs] = useState("");
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
 
@@ -31,6 +32,7 @@ export function NetworkingEdit({ name, notify, closeModal, load }: ModalActions 
           setTargetPort(first.targetPort === null || first.targetPort === undefined ? "" : String(first.targetPort));
           setNodePort(first.nodePort != null ? String(first.nodePort) : "");
         }
+        setExternalIPs((svc.externalIPs ?? []).join("\n"));
       }
     });
   }, [name]);
@@ -46,6 +48,9 @@ export function NetworkingEdit({ name, notify, closeModal, load }: ModalActions 
     }
     body.type = type;
     if (type !== "ClusterIP" && nodePort) body.nodePort = Number(nodePort);
+    // externalIPs is an explicit field (one per line, blank lines ignored). When the textarea is
+    // entirely empty, send [] to wipe the stored list — the patch builder translates that to null.
+    body.externalIPs = externalIPs.split(/\s+/).map((s) => s.trim()).filter(Boolean);
     const res = await http.patchNetworking(name, body);
     setBusy(false);
     if (res.status >= 400) {
@@ -84,8 +89,25 @@ export function NetworkingEdit({ name, notify, closeModal, load }: ModalActions 
       <Field id="net-port" label={t("Service port (a porta visível para clientes)")} value={port} onChange={setPort} placeholder="ex: 80" />
       <Field id="net-target" label={t("Target port (containerPort no pod)")} value={targetPort} onChange={setTargetPort} placeholder={t("número ou nome da porta nomeada")} />
       {type !== "ClusterIP" ? (
-        <Field id="net-node" label={t("NodePort (30000-32767, deixe em branco para auto)")} value={nodePort} onChange={setNodePort} />
+        <>
+          <Field id="net-node" label={t("NodePort (30000-32767, deixe em branco para auto)")} value={nodePort} onChange={setNodePort} />
+          <p className="text-[var(--mut)]" style={{ fontSize: 12, marginTop: -4 }}>
+            {t("Limite do kube-apiserver. Para expor numa porta arbitrária (ex: 80, 8090) na sua rede, use External IPs abaixo.")}
+          </p>
+        </>
       ) : null}
+
+      <Field
+        id="net-extips"
+        label={t("External IPs (um por linha, opcional)")}
+        value={externalIPs}
+        onChange={setExternalIPs}
+        placeholder="192.168.1.10"
+        multiline
+      />
+      <p className="text-[var(--mut)]" style={{ fontSize: 12, marginTop: -4 }}>
+        {t("kube-proxy faz cada node escutar na Service port nessas IPs — funciona com qualquer porta (80, 8090, etc), sem o limite do NodePort. Deixe em branco para desativar.")}
+      </p>
 
       {info ? <p className="text-[var(--mut)]" style={{ fontSize: 12 }}>{info}</p> : null}
 

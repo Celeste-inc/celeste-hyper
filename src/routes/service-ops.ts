@@ -32,14 +32,19 @@ const HpaPatchBody = z
   })
   .strict();
 
+// Permissive IP/hostname check (k8s lets externalIPs be DNS names too). The full RFC validation
+// happens server-side anyway; this just rejects obvious garbage and bounds the length.
+const EXTERNAL_HOST_RE = /^[A-Za-z0-9][A-Za-z0-9.:\-]{0,252}$/;
+
 const NetworkingPatchBody = z
   .object({
     portName: z.string().min(1).max(63).optional(),
     port: z.number().int().min(1).max(65535).optional(),
     targetPort: z.union([z.number().int().min(1).max(65535), z.string().min(1).max(63)]).optional(),
-    nodePort: z.number().int().min(30000).max(32767).optional(),
+    nodePort: z.number().int().min(1).max(65535).optional(),
     protocol: z.enum(["TCP", "UDP"]).optional(),
     type: z.enum(["ClusterIP", "NodePort", "LoadBalancer"]).optional(),
+    externalIPs: z.array(z.string().regex(EXTERNAL_HOST_RE)).max(8).optional(),
   })
   .strict();
 
@@ -700,6 +705,18 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
         if (parsed.data.nodePort !== undefined && newType === "ClusterIP") {
           return status(422, { error: "nodePort can only be set when type is NodePort or LoadBalancer" });
         }
+        // NodePort range is a kube-apiserver constraint (default 30000-32767). Catch this here so the
+        // operator gets a helpful suggestion instead of a generic kubectl rejection — they probably
+        // want externalIPs (any port on any node IP) or LoadBalancer for ports outside the range.
+        if (
+          parsed.data.nodePort !== undefined &&
+          (parsed.data.nodePort < 30000 || parsed.data.nodePort > 32767)
+        ) {
+          return status(422, {
+            error: "nodePort must be in the kube-apiserver range (default 30000-32767)",
+            hint: "Para expor numa porta arbitrária (ex: 80, 8090) use externalIPs com o IP do node, ou Service type=LoadBalancer.",
+          });
+        }
 
         const newPort = parsed.data.port ?? targetPort.port;
         const newTargetPort = parsed.data.targetPort ?? targetPort.targetPort ?? newPort;
@@ -714,6 +731,7 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
           protocol: newProtocol,
           type: newType,
           nodePort: newNodePort ?? undefined,
+          externalIPs: parsed.data.externalIPs,
         });
         const svcRes = await k8s.kubectl([
           "-n", svc.namespace, "patch", "service", "--type=strategic", "-p", JSON.stringify(svcPatch), "--", info.name,
@@ -735,9 +753,10 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
         ]);
         if (depRes.code !== 0) return status(502, { error: (depRes.stderr || depRes.stdout).trim().slice(0, 200) });
 
+        const finalExternalIPs = parsed.data.externalIPs ?? info.externalIPs ?? [];
         return {
           ok: true,
-          service: { name: info.name, namespace: svc.namespace, type: newType, port: newPort, targetPort: newTargetPort, nodePort: newNodePort ?? null, protocol: newProtocol },
+          service: { name: info.name, namespace: svc.namespace, type: newType, port: newPort, targetPort: newTargetPort, nodePort: newNodePort ?? null, protocol: newProtocol, externalIPs: finalExternalIPs },
           workload: { kind: workloadKindFor(svc), name: workloadNameFor(svc), containerPort },
           loadBalancer: {
             kind: newType,

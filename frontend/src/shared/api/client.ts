@@ -127,10 +127,11 @@ export const http = {
       nodePort?: number;
       protocol?: "TCP" | "UDP";
       type?: "ClusterIP" | "NodePort" | "LoadBalancer";
+      externalIPs?: string[];
     },
   ) => json<{
     ok: true;
-    service: { name: string; namespace: string; type: string; port: number; targetPort: number | string; nodePort: number | null; protocol: string };
+    service: { name: string; namespace: string; type: string; port: number; targetPort: number | string; nodePort: number | null; protocol: string; externalIPs: string[] };
     workload: { kind: string; name: string; containerPort: number };
     loadBalancer: { kind: string; message: string };
   }>(`/services/${encodeURIComponent(name)}/networking`, "PATCH", body),
