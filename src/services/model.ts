@@ -107,6 +107,9 @@ export const RegistryPullSchema = z.object({
   sourceType: z.literal("registry-pull"),
   imageRef: z.string().min(1),
   imagePullSecret: z.string().optional(),
+  /** Link to a stored registry credential (Settings → Registries). When set, deploys ensure the
+   *  corresponding imagePullSecret exists on the target cluster + namespace. */
+  registrySourceId: z.string().min(1).regex(ID_RE).optional(),
   workloadKind: z.enum(["Deployment", "StatefulSet", "DaemonSet"]).default("Deployment"),
   workloadName: z.string().optional(),
 });

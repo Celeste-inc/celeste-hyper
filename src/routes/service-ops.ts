@@ -11,9 +11,16 @@ import {
   workloadNameFor,
   containerNameFor,
   relatedWorkloadsFor,
+  workloadKindFor,
   type ServiceModel,
 } from "../services/model.ts";
 import { findHpaForWorkload, summarizeHpa, validateHpaPatch, buildHpaPatch } from "../services/hpa.ts";
+import { parseTopPods, summarizePodMetrics } from "../services/metrics.ts";
+import { computeServiceSlo, type DegradedRange } from "../services/slo.ts";
+import {
+  buildServicePortPatch,
+  buildDeploymentContainerPortPatch,
+} from "../services/networking-patch.ts";
 import type { ClusterNode, IngressRule, K8sServiceInfo } from "../lib/k8s.ts";
 import type { DnsHint } from "../lib/dns-hint.ts";
 
@@ -22,6 +29,17 @@ const HpaPatchBody = z
     min: z.number().int().optional(),
     max: z.number().int().optional(),
     targetCPUUtilizationPercentage: z.number().int().optional(),
+  })
+  .strict();
+
+const NetworkingPatchBody = z
+  .object({
+    portName: z.string().min(1).max(63).optional(),
+    port: z.number().int().min(1).max(65535).optional(),
+    targetPort: z.union([z.number().int().min(1).max(65535), z.string().min(1).max(63)]).optional(),
+    nodePort: z.number().int().min(30000).max(32767).optional(),
+    protocol: z.enum(["TCP", "UDP"]).optional(),
+    type: z.enum(["ClusterIP", "NodePort", "LoadBalancer"]).optional(),
   })
   .strict();
 
@@ -222,6 +240,15 @@ async function hpaCapable(deps: ApiDeps, clusterId: string): Promise<boolean> {
     merged = deps.capabilities.merged(clusterId);
   }
   return Boolean(merged.capabilities.hpaV2?.value);
+}
+
+async function metricsCapable(deps: ApiDeps, clusterId: string): Promise<boolean> {
+  let merged = deps.capabilities.merged(clusterId);
+  if (merged.lastCheckedAt === null) {
+    await deps.capabilities.refreshCluster(clusterId);
+    merged = deps.capabilities.merged(clusterId);
+  }
+  return Boolean(merged.capabilities.metricsServerV1Beta1?.value);
 }
 
 export const serviceOpsRoutes = (deps: ApiDeps) => {
@@ -590,5 +617,134 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
         return { hpa: updated ? summarizeHpa(updated) : null };
       },
       { detail: { summary: "Patch min/max/CPU target on the service's HPA (operator+)", tags: ["service-ops"] } },
+    )
+    .get(
+      "/services/:name/metrics",
+      async ({ params, status }) => {
+        const svc = deps.registry.get(params.name);
+        if (!svc) return status(404, { error: "service not found" });
+        if (!(await metricsCapable(deps, svc.clusterId))) {
+          return status(409, { error: "metrics.k8s.io capability not available on this cluster" });
+        }
+        const k8s = deps.pool.get(svc.clusterId);
+        if (!k8s) return status(500, { error: `cluster '${svc.clusterId}' not configured` });
+        const selectorTarget = await findPodSelector(svc.name);
+        const selector = selectorTarget?.selector ?? `app=${workloadNameFor(svc)}`;
+        const r = await k8s.kubectl([
+          "-n", svc.namespace, "top", "pods", "-l", selector, "--no-headers",
+        ]);
+        if (r.code !== 0) return status(502, { error: (r.stderr || r.stdout).trim() || "kubectl top failed" });
+        const pods = parseTopPods(r.stdout);
+        return { pods, summary: summarizePodMetrics(pods) };
+      },
+      { detail: { summary: "Live CPU/RAM usage per pod (via metrics-server)", tags: ["service-ops"] } },
+    )
+    .get(
+      "/services/:name/slo",
+      async ({ params, status }) => {
+        const svc = deps.registry.get(params.name);
+        if (!svc) return status(404, { error: "service not found" });
+        const deployments = deps.state.recentDeployments(svc.name, 100);
+        const degraded = deps.state.serviceDegraded(svc.name);
+        const degradedRanges: DegradedRange[] = degraded ? [{ startedAt: degraded.at, clearedAt: null }] : [];
+        // Pod restart counts (best-effort: empty when the cluster is unreachable).
+        const restartCounts: number[] = [];
+        try {
+          const k8s = deps.pool.get(svc.clusterId);
+          if (k8s) {
+            const target = await findPodSelector(svc.name);
+            const selector = target?.selector ?? `app=${workloadNameFor(svc)}`;
+            const pods = (await k8s.listPods(svc.namespace, selector)) as Array<{ containers?: Array<{ restartCount?: number }> }>;
+            for (const p of pods) {
+              const podTotal = (p.containers ?? []).reduce((s, c) => s + (c.restartCount ?? 0), 0);
+              restartCounts.push(podTotal);
+            }
+          }
+        } catch {
+          // pod fetch optional — fall through with what we have
+        }
+        return computeServiceSlo({
+          now: deps.clock.now(),
+          deployments,
+          restartCounts,
+          degradedRanges,
+        });
+      },
+      { detail: { summary: "Service-level objective digest (deploy success, MTTR, restarts, health)", tags: ["service-ops"] } },
+    )
+    .patch(
+      "/services/:name/networking",
+      async ({ params, body, status }) => {
+        const svc = deps.registry.get(params.name);
+        if (!svc) return status(404, { error: "service not found" });
+        const parsed = NetworkingPatchBody.safeParse(body ?? {});
+        if (!parsed.success) return status(422, { error: "invalid body", issues: parsed.error.issues });
+        const k8s = deps.pool.get(svc.clusterId);
+        if (!k8s) return status(500, { error: `cluster '${svc.clusterId}' not configured` });
+        const info = (await k8s.getServiceInfo(workloadNameFor(svc), svc.namespace))
+          ?? (await k8s.getServiceInfo(svc.name, svc.namespace));
+        if (!info) return status(404, { error: "no Service object found in namespace" });
+
+        // Resolve the port being patched: explicit portName if provided, else the first port.
+        const targetPort = parsed.data.portName
+          ? info.ports.find((p) => p.name === parsed.data.portName)
+          : info.ports[0];
+        if (!targetPort) return status(404, { error: `port '${parsed.data.portName ?? "<first>"}' not found on Service` });
+
+        const candidateType = parsed.data.type ?? info.type ?? "ClusterIP";
+        if (candidateType !== "ClusterIP" && candidateType !== "NodePort" && candidateType !== "LoadBalancer") {
+          return status(422, { error: `unsupported service type '${candidateType}'` });
+        }
+        const newType: "ClusterIP" | "NodePort" | "LoadBalancer" = candidateType;
+        // ClusterIP rejects nodePort. If the operator passed nodePort but didn't switch type, that's a user error.
+        if (parsed.data.nodePort !== undefined && newType === "ClusterIP") {
+          return status(422, { error: "nodePort can only be set when type is NodePort or LoadBalancer" });
+        }
+
+        const newPort = parsed.data.port ?? targetPort.port;
+        const newTargetPort = parsed.data.targetPort ?? targetPort.targetPort ?? newPort;
+        const newProtocol = (parsed.data.protocol ?? targetPort.protocol ?? "TCP") as "TCP" | "UDP";
+        const newNodePort = parsed.data.nodePort ?? (newType !== "ClusterIP" ? targetPort.nodePort ?? undefined : undefined);
+
+        // 1) Patch the Service in-place (no recreation = no data loss, no LB hiccup beyond endpoint flip).
+        const svcPatch = buildServicePortPatch({
+          portName: targetPort.name ?? parsed.data.portName ?? "default",
+          port: newPort,
+          targetPort: newTargetPort,
+          protocol: newProtocol,
+          type: newType,
+          nodePort: newNodePort ?? undefined,
+        });
+        const svcRes = await k8s.kubectl([
+          "-n", svc.namespace, "patch", "service", "--type=strategic", "-p", JSON.stringify(svcPatch), "--", info.name,
+        ]);
+        if (svcRes.code !== 0) return status(502, { error: (svcRes.stderr || svcRes.stdout).trim().slice(0, 200) });
+
+        // 2) Patch the Deployment's containerPort. Strategic merge — keys on container name, so
+        //    env/volumes/imagePullSecrets stay intact, pods are rolled with the new port.
+        //    The HPA continues to observe the Deployment by name → autoscaling untouched.
+        const containerPort = typeof newTargetPort === "number" ? newTargetPort : newPort;
+        const depPatch = buildDeploymentContainerPortPatch({
+          containerName: containerNameFor(svc),
+          portName: targetPort.name ?? parsed.data.portName ?? "default",
+          containerPort,
+          protocol: newProtocol,
+        });
+        const depRes = await k8s.kubectl([
+          "-n", svc.namespace, "patch", workloadKindFor(svc).toLowerCase(), "--type=strategic", "-p", JSON.stringify(depPatch), "--", workloadNameFor(svc),
+        ]);
+        if (depRes.code !== 0) return status(502, { error: (depRes.stderr || depRes.stdout).trim().slice(0, 200) });
+
+        return {
+          ok: true,
+          service: { name: info.name, namespace: svc.namespace, type: newType, port: newPort, targetPort: newTargetPort, nodePort: newNodePort ?? null, protocol: newProtocol },
+          workload: { kind: workloadKindFor(svc), name: workloadNameFor(svc), containerPort },
+          loadBalancer: {
+            kind: newType,
+            message: `kube-proxy continues to route the new port via selector app=${workloadNameFor(svc)}; existing replicas roll one-by-one (no data loss).`,
+          },
+        };
+      },
+      { detail: { summary: "Patch the Service port + Deployment containerPort in-place (no recreation, no data loss)", tags: ["service-ops"] } },
     );
 };

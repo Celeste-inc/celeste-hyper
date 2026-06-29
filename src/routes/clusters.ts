@@ -4,6 +4,8 @@ import type { ApiDeps } from "./deps.ts";
 import { CreateClusterSchema, UpdateClusterSchema } from "../services/model.ts";
 import { parseCrdList, parseCrList, isValidResource, isValidName } from "../services/crds.ts";
 import { evaluateSkew } from "../lib/kube-version.ts";
+import { aggregateClusterPorts, listClusterPortAllocations, type RawServiceList } from "../services/port-registry.ts";
+import { allocateExposePorts } from "../services/port-allocator.ts";
 
 // RFC-1123 name guard. Used by the ingress route (also blocks a `--flag`-style value reaching
 // kubectl as a flag) and the override route (blocks dead overrides that can't match a real key).
@@ -22,6 +24,26 @@ const WorkloadOverrideBody = z.object({
   name: z.string().regex(K8S_NAME),
   category: z.enum(["application", "infrastructure"]),
 });
+
+const PortCheckQuery = z.object({
+  namespace: z.string().regex(K8S_NAME),
+  type: z.enum(["ClusterIP", "NodePort", "LoadBalancer"]),
+  port: z.coerce.number().int().min(1).max(65535),
+  nodePort: z.coerce.number().int().min(30000).max(32767).optional(),
+  protocol: z.enum(["TCP", "UDP"]).optional(),
+});
+
+async function fetchServicesList(
+  k8s: { kubectl(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> },
+): Promise<RawServiceList | { error: string }> {
+  const r = await k8s.kubectl(["get", "services", "-A", "-o", "json", "--request-timeout=10s"]);
+  if (r.code !== 0) return { error: (r.stderr || r.stdout).trim().slice(0, 200) };
+  try {
+    return JSON.parse(r.stdout) as RawServiceList;
+  } catch (e) {
+    return { error: `kubectl returned non-JSON: ${(e as Error).message}` };
+  }
+}
 
 const tags = ["clusters"];
 
@@ -185,4 +207,50 @@ export const clusterRoutes = (deps: ApiDeps) =>
         return { ok: true };
       },
       { detail: { summary: "Override a discovered workload's classification (operator+)", tags } },
+    )
+    .get(
+      "/clusters/:id/ports",
+      async ({ params, status }) => {
+        if (!deps.clusters.get(params.id)) return status(404, { error: "cluster not found" });
+        const k8s = deps.pool.get(params.id);
+        if (!k8s) return status(404, { error: "cluster not found" });
+        const list = await fetchServicesList(k8s);
+        if ("error" in list) return status(502, { error: list.error });
+        const items = listClusterPortAllocations(list);
+        const state = aggregateClusterPorts(list);
+        const namespaces = [...state.servicePortsByNamespace.keys()].sort();
+        const nodePorts = [...state.nodePortsInUse];
+        return {
+          items,
+          summary: {
+            totalServicePorts: items.length,
+            totalNodePorts: nodePorts.length,
+            namespaces,
+            nodePorts,
+          },
+        };
+      },
+      { detail: { summary: "List every Service port + NodePort in the cluster", tags } },
+    )
+    .get(
+      "/clusters/:id/ports/check",
+      async ({ params, query, status }) => {
+        if (!deps.clusters.get(params.id)) return status(404, { error: "cluster not found" });
+        const parsed = PortCheckQuery.safeParse(query);
+        if (!parsed.success) return status(422, { error: "invalid query", issues: parsed.error.issues });
+        const k8s = deps.pool.get(params.id);
+        if (!k8s) return status(404, { error: "cluster not found" });
+        const list = await fetchServicesList(k8s);
+        if ("error" in list) return status(502, { error: list.error });
+        const state = aggregateClusterPorts(list);
+        const desired = {
+          type: parsed.data.type,
+          port: parsed.data.port,
+          nodePort: parsed.data.nodePort,
+          protocol: parsed.data.protocol ?? ("TCP" as const),
+        };
+        const result = allocateExposePorts(desired, parsed.data.namespace, state);
+        return { allocation: result.expose, conflicts: result.conflicts };
+      },
+      { detail: { summary: "Check / auto-allocate ports for an expose request", tags } },
     );

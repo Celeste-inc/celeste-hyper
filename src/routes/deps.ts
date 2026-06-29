@@ -15,6 +15,7 @@ import type { VersionProbe } from "../services/network-scan.ts";
 import type { HelmLike } from "../lib/helm.ts";
 import type { GitLike } from "../lib/git.ts";
 import type { R2SourceStore } from "../services/r2-settings.ts";
+import type { RegistrySourceStore } from "../services/registry-sources.ts";
 
 /** Dependencies injected into every route plugin (closure-captured, no globals). */
 export interface ApiDeps {
@@ -26,6 +27,7 @@ export interface ApiDeps {
   deployer: Deployer;
   r2: R2Like;
   r2Sources: R2SourceStore;
+  registrySources: RegistrySourceStore;
   poller: Poller;
   queue: Queue;
   capabilities: CapabilityService;
@@ -38,4 +40,6 @@ export interface ApiDeps {
   helm: HelmLike;
   /** Git CLI runner (P2.3 git-sync); injectable so tests avoid spawning `git`. */
   git: GitLike;
+  /** HTTP fetch for outbound calls (Docker Hub search); injectable for tests. */
+  fetch?: (url: string) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 }

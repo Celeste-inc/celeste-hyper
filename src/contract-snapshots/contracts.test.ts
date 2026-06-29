@@ -38,6 +38,7 @@ describe("public contract snapshots (CC.6)", () => {
       infrastructure: ["?empty"],
       items: [
         {
+          activeDeployment: "null",
           cluster: "null",
           clusterId: "string",
           currentTag: "null",

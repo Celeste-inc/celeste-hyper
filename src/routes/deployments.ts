@@ -1,9 +1,10 @@
-import { Elysia } from "elysia";
+import { Elysia, sse } from "elysia";
 import { z } from "zod";
 import type { ApiDeps } from "./deps.ts";
 import { DEPLOY_JOB_KIND } from "../queue/handlers/deploy.ts";
 import { ROLLBACK_JOB_KIND, resolveRollbackTarget } from "../queue/handlers/rollback.ts";
 import { preflightSetImage } from "../services/preflight.ts";
+import { deployEvents } from "./deploy-stream.ts";
 
 const DeployBody = z.object({ tag: z.string().min(1) });
 const R2_ROLLBACK_ERROR = "r2-bundle-uses-deploy-history";
@@ -144,6 +145,19 @@ export const deploymentRoutes = (deps: ApiDeps) =>
         return { deployment: row };
       },
       { detail: { summary: "Get a deployment by id", tags: ["deployments"] } },
+    )
+    .get(
+      "/deployments/:id/stream",
+      async function* ({ params, status, request }) {
+        const id = Number(params.id);
+        if (!Number.isFinite(id)) {
+          return status(400, { error: "invalid id" });
+        }
+        for await (const ev of deployEvents(deps.state, id, deps.clock, request.signal)) {
+          yield sse({ event: ev.event, data: ev.data });
+        }
+      },
+      { detail: { summary: "Live SSE stream of a deployment's progress", tags: ["deployments"] } },
     )
     .get(
       "/jobs/:id",

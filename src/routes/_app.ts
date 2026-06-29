@@ -8,6 +8,10 @@ import { deploymentRoutes } from "./deployments.ts";
 import { serviceOpsRoutes } from "./service-ops.ts";
 import { envRoutes } from "./env.ts";
 import { integrationRoutes } from "./integrations.ts";
+import { registryRoutes } from "./registries.ts";
+import { fleetRoutes } from "./fleet.ts";
+import { templateRoutes } from "./templates.ts";
+import { registrySourceRoutes } from "./registry-sources.ts";
 import { discoveryRoutes } from "./discovery.ts";
 import { helmRoutes } from "./helm.ts";
 import { auditRoutes } from "./audit.ts";
@@ -67,6 +71,10 @@ export function buildApp(deps: ApiDeps) {
     .use(serviceOpsRoutes(deps))
     .use(envRoutes(deps))
     .use(integrationRoutes(deps))
+    .use(registryRoutes(deps))
+    .use(fleetRoutes(deps))
+    .use(templateRoutes(deps))
+    .use(registrySourceRoutes(deps))
     .use(discoveryRoutes(deps))
     .use(helmRoutes(deps))
     .use(auditRoutes(deps))

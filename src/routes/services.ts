@@ -3,6 +3,10 @@ import { z } from "zod";
 import type { ApiDeps } from "./deps.ts";
 import { CreateServiceSchema, UpdateServiceSchema, type ServiceModel } from "../services/model.ts";
 import { listVersions } from "../services/discovery.ts";
+import { aggregateClusterPorts, type RawServiceList } from "../services/port-registry.ts";
+import { allocateExposePorts, type PortConflict } from "../services/port-allocator.ts";
+import type { ApiDeps as ApiDepsType } from "./deps.ts";
+import { purgeService } from "../services/purge.ts";
 import { parseLsRemote, validateGitUrl, validateGitPath, validateDeployKeyPath } from "../lib/git.ts";
 import type { Config } from "../config.ts";
 
@@ -28,6 +32,28 @@ function gitSyncError(data: { sourceType?: unknown; gitUrl?: unknown; gitPath?: 
   return null;
 }
 import { listRegistryTags, sortTagsDesc } from "../lib/registry.ts";
+import type { ExposeConfig } from "../services/model.ts";
+
+async function resolveExposePorts(
+  deps: ApiDepsType,
+  clusterId: string,
+  namespace: string,
+  desired: ExposeConfig,
+): Promise<{ expose: ExposeConfig; conflicts: PortConflict[] } | { error: string }> {
+  const k8s = deps.pool.get(clusterId);
+  if (!k8s) return { expose: desired, conflicts: [] }; // cluster offline → trust the operator's pick
+  const r = await k8s.kubectl(["get", "services", "-A", "-o", "json", "--request-timeout=10s"]);
+  if (r.code !== 0) return { error: (r.stderr || r.stdout).trim().slice(0, 200) };
+  let list: RawServiceList;
+  try {
+    list = JSON.parse(r.stdout) as RawServiceList;
+  } catch (e) {
+    return { error: `kubectl returned non-JSON: ${(e as Error).message}` };
+  }
+  const state = aggregateClusterPorts(list);
+  const result = allocateExposePorts(desired, namespace, state);
+  return { expose: result.expose, conflicts: result.conflicts };
+}
 import * as envFiles from "../lib/env-files.ts";
 
 const tags = ["services"];
@@ -57,6 +83,8 @@ export const serviceRoutes = (deps: ApiDeps) =>
             const cluster = snap.cluster.find(
               (w) => w.name === s.name && w.namespace === s.namespace && w.clusterId === s.clusterId,
             );
+            // Most recent deploy (in-flight or terminal) so the UI can paint "deploying" instead of red.
+            const recent = deps.state.recentDeployments(s.name, 1)[0] ?? null;
             return {
               ...s,
               currentTag: current?.tag ?? null,
@@ -74,6 +102,9 @@ export const serviceRoutes = (deps: ApiDeps) =>
                   }
                 : null,
               newVersion: snap.newVersions[s.name] ?? null,
+              activeDeployment: recent
+                ? { status: recent.status, started_at: recent.started_at, finished_at: recent.finished_at }
+                : null,
             };
           }),
         );
@@ -108,16 +139,23 @@ export const serviceRoutes = (deps: ApiDeps) =>
     )
     .post(
       "/services",
-      ({ body, status }) => {
+      async ({ body, status }) => {
         const parsed = CreateServiceSchema.safeParse(body ?? {});
         if (!parsed.success) return status(422, { error: "invalid body", issues: parsed.error.issues });
         if (!deps.clusters.get(parsed.data.clusterId))
           return status(400, { error: `cluster '${parsed.data.clusterId}' not found` });
         const gitErr = gitSyncError(parsed.data, deps.cfg);
         if (gitErr) return status(422, { error: gitErr });
+        let portReassignments: PortConflict[] | undefined;
+        if (parsed.data.expose) {
+          const resolved = await resolveExposePorts(deps, parsed.data.clusterId, parsed.data.namespace, parsed.data.expose);
+          if ("error" in resolved) return status(502, { error: resolved.error });
+          parsed.data.expose = resolved.expose;
+          portReassignments = resolved.conflicts;
+        }
         try {
           const created = deps.registry.create(parsed.data);
-          return status(201, { service: created });
+          return status(201, portReassignments !== undefined ? { service: created, portReassignments } : { service: created });
         } catch (e) {
           return status(409, { error: (e as Error).message });
         }
@@ -164,12 +202,18 @@ export const serviceRoutes = (deps: ApiDeps) =>
     )
     .delete(
       "/services/:name",
-      ({ params, status }) => {
-        const removed = deps.registry.delete(params.name);
-        if (!removed) return status(404, { error: "service not found" });
-        return { ok: true };
+      async ({ params, query, status }) => {
+        const svc = deps.registry.get(params.name);
+        if (!svc) return status(404, { error: "service not found" });
+        const dryRun = query.dryRun === "true";
+        const k8s = deps.pool.get(svc.clusterId);
+        const purge = k8s
+          ? await purgeService(svc, { k8s: k8s as never, envFilesDir: deps.cfg.envFilesDir, dryRun })
+          : { removed: [], failed: [{ resource: "cluster", reason: `cluster '${svc.clusterId}' not configured` }], planned: [] };
+        if (!dryRun) deps.registry.delete(svc.name);
+        return { ok: true, purge };
       },
-      { detail: { summary: "Delete a service (does not touch the cluster)", tags } },
+      { detail: { summary: "Delete a service and purge its cluster resources (workload, Service, CM, Secret, HPA, Ingress, env files)", tags } },
     )
     .post(
       "/services/adopt",

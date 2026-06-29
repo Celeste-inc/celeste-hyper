@@ -18,6 +18,7 @@ import { recordAudit } from "./lib/audit.ts";
 import { Helm } from "./lib/helm.ts";
 import { Git } from "./lib/git.ts";
 import { effectiveR2Config, R2SourceStore } from "./services/r2-settings.ts";
+import { RegistrySourceStore } from "./services/registry-sources.ts";
 import { makeHelmUpgradeHandler, HELM_UPGRADE_JOB_KIND } from "./queue/handlers/helm-upgrade.ts";
 import { buildApp } from "./routes/_app.ts";
 import { log } from "./lib/logger.ts";
@@ -63,6 +64,7 @@ await ensureDefaultAdmin(state); // first boot: create the temporary admin/admin
 
 const r2 = new R2(effectiveR2Config(state, cfg.r2));
 const r2Sources = new R2SourceStore(state, cfg.r2, r2);
+const registrySources = new RegistrySourceStore(state);
 
 const seedCluster = cfg.clusters?.[0]
   ? {
@@ -116,7 +118,7 @@ void capabilities.checkKubectlVersion(defaultClusterId); // CC.5: warn once if k
 const dns = makeDnsResolver({ clock });
 const poller = new Poller({ cfg, r2Sources, state, registry, deployer, pool, clusters, queue, capabilities, git, clock });
 
-const app = buildApp({ cfg, registry, clusters, pool, state, deployer, r2, r2Sources, poller, queue, capabilities, dns, clock, auth, netProbe: realVersionProbe, helm, git });
+const app = buildApp({ cfg, registry, clusters, pool, state, deployer, r2, r2Sources, registrySources, poller, queue, capabilities, dns, clock, auth, netProbe: realVersionProbe, helm, git });
 
 poller.start();
 worker.start();

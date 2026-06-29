@@ -15,6 +15,7 @@ import type { VersionProbe } from "../services/network-scan.ts";
 import type { HelmLike } from "../lib/helm.ts";
 import type { GitLike } from "../lib/git.ts";
 import { R2SourceStore } from "../services/r2-settings.ts";
+import { RegistrySourceStore } from "../services/registry-sources.ts";
 import { realClock, type Clock } from "../lib/clock.ts";
 
 /** Minimal structural fake of the K8s adapter surface the route handlers touch. */
@@ -95,6 +96,8 @@ export interface FakeDepsOptions {
   gitConfig?: { hostAllowlist?: string[]; keysDir?: string };
   /** Host-capability `which` (P0.8/P2.2): when provided, host caps are probed (e.g. `helmCli`). */
   which?: (bin: string) => boolean;
+  /** Outbound HTTP fetch (Docker Hub search etc.); defaults to a "not configured" stub. */
+  fetch?: (url: string) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 }
 
 export const TEST_JWT_SECRET = "test-jwt-secret-000000000000000000";
@@ -198,6 +201,7 @@ export function makeFakeDeps(opts: FakeDepsOptions = {}): ApiDeps {
     download: async () => {},
   };
   const r2Sources = new R2SourceStore(state, cfg.r2, r2);
+  const registrySources = new RegistrySourceStore(state);
 
   const auth = { jwtSecret: opts.jwtSecret ?? TEST_JWT_SECRET };
 
@@ -209,5 +213,6 @@ export function makeFakeDeps(opts: FakeDepsOptions = {}): ApiDeps {
   const helm: HelmLike = opts.helm ?? { run: async () => ({ code: 1, stdout: "", stderr: "helm not run in test" }) };
   const git: GitLike = opts.git ?? { run: async () => ({ code: 1, stdout: "", stderr: "git not run in test" }) };
 
-  return { cfg, registry, clusters, pool, state, deployer, r2, r2Sources, poller, queue, capabilities, dns, clock, auth, netProbe, helm, git } as unknown as ApiDeps;
+  const fetcher = opts.fetch;
+  return { cfg, registry, clusters, pool, state, deployer, r2, r2Sources, registrySources, poller, queue, capabilities, dns, clock, auth, netProbe, helm, git, fetch: fetcher } as unknown as ApiDeps;
 }
