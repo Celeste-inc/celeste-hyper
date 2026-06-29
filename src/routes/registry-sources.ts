@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ApiDeps } from "./deps.ts";
 import { buildImagePullSecretManifest, type RegistryPresetId } from "../services/registry-presets.ts";
 import { stringify as yamlStringify } from "./yaml.ts";
+import { testRegistryConnection, type RegistryTestFetcher } from "../services/registry-test.ts";
 
 const PresetIds = ["ghcr", "acr", "docker-hub", "quay", "harbor", "ecr"] as const;
 const SOURCE_ID_RE = /^[a-z0-9][a-z0-9.-]*$/;
@@ -30,7 +31,34 @@ const ApplyBody = z
   })
   .strict();
 
+const TestBody = z
+  .object({
+    presetId: z.enum(PresetIds),
+    registry: z.string().min(1).optional(),
+    region: z.string().min(1).optional(),
+    username: z.string().min(1),
+    password: z.string().min(1).optional(),
+  })
+  .strict();
+
 const tags = ["settings"];
+
+// Cast deps.fetch to a RegistryTestFetcher — both expect the same { ok, status, headers, json,
+// text } envelope. When unset (no outbound HTTP configured), fall back to the global fetch.
+function getFetcher(deps: ApiDeps): RegistryTestFetcher {
+  const f = deps.fetch as unknown as RegistryTestFetcher | undefined;
+  if (f) return f;
+  return async (url, init) => {
+    const r = await fetch(url, init);
+    return {
+      ok: r.ok,
+      status: r.status,
+      headers: { get: (n: string) => r.headers.get(n) },
+      json: () => r.json() as Promise<unknown>,
+      text: () => r.text(),
+    };
+  };
+}
 
 export const registrySourceRoutes = (deps: ApiDeps) =>
   new Elysia()
@@ -109,4 +137,48 @@ export const registrySourceRoutes = (deps: ApiDeps) =>
         return { ok: true, secretName: parsed.data.secretName, namespace: parsed.data.namespace, clusterId: parsed.data.clusterId };
       },
       { detail: { summary: "Provision the imagePullSecret on a cluster + namespace from this source", tags } },
+    )
+    .post(
+      "/settings/registries/test",
+      async ({ body, status }) => {
+        const parsed = TestBody.safeParse(body ?? {});
+        if (!parsed.success) return status(422, { error: "invalid body", issues: parsed.error.issues });
+        if (!parsed.data.password) return status(422, { error: "password is required to test the connection" });
+        const result = await testRegistryConnection(
+          {
+            presetId: parsed.data.presetId as RegistryPresetId,
+            registry: parsed.data.registry,
+            region: parsed.data.region,
+            username: parsed.data.username,
+            password: parsed.data.password,
+          },
+          getFetcher(deps),
+        );
+        return result;
+      },
+      { detail: { summary: "Validate registry credentials against the live registry (OCI v2 token flow)", tags } },
+    )
+    .post(
+      "/settings/registries/:id/test",
+      async ({ params, body, status }) => {
+        const source = deps.registrySources.get(params.id);
+        if (!source) return status(404, { error: "registry source not found" });
+        // Allow the operator to test with a one-shot override password without persisting it (useful
+        // when rotating creds: "did this new PAT work?" before saving).
+        const override = (body && typeof body === "object" && "password" in body && typeof (body as { password?: unknown }).password === "string")
+          ? (body as { password: string }).password
+          : null;
+        const result = await testRegistryConnection(
+          {
+            presetId: source.presetId,
+            registry: source.registry,
+            region: source.region,
+            username: source.username,
+            password: override ?? source.password,
+          },
+          getFetcher(deps),
+        );
+        return result;
+      },
+      { detail: { summary: "Validate a saved registry source's credentials against the live registry", tags } },
     );

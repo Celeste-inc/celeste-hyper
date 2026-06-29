@@ -122,6 +122,108 @@ describe("registry source admin endpoints", () => {
     expect(applied).toContain("name: ghcr-pull");
   });
 
+  it("POST /test validates credentials against the live registry (Bearer token flow)", async () => {
+    const calls: string[] = [];
+    const deps = setup();
+    deps.fetch = (async (url: string) => {
+      calls.push(url);
+      if (url === "https://ghcr.io/v2/") {
+        return {
+          ok: false,
+          status: 401,
+          headers: { get: (n: string) => (n.toLowerCase() === "www-authenticate" ? 'Bearer realm="https://ghcr.io/token",service="ghcr.io"' : null) },
+          json: async () => ({}),
+          text: async () => "",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({ token: "ok" }),
+        text: async () => "",
+      };
+    }) as never;
+    const r = await call(buildApp(deps), "POST", "/api/settings/registries/test", {
+      presetId: "ghcr",
+      username: "octocat",
+      password: "ghp_xxx",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(true);
+    expect(calls[0]).toBe("https://ghcr.io/v2/");
+  });
+
+  it("POST /test 422s when password is missing (cannot test without it)", async () => {
+    const r = await call(buildApp(setup()), "POST", "/api/settings/registries/test", {
+      presetId: "ghcr",
+      username: "octocat",
+    });
+    expect(r.status).toBe(422);
+  });
+
+  it("POST /test surfaces wrong-credential rejections with the registry's reason", async () => {
+    const deps = setup();
+    deps.fetch = (async (url: string) => {
+      if (url === "https://ghcr.io/v2/") {
+        return {
+          ok: false,
+          status: 401,
+          headers: { get: (n: string) => (n.toLowerCase() === "www-authenticate" ? 'Bearer realm="https://ghcr.io/token",service="ghcr.io"' : null) },
+          json: async () => ({}),
+          text: async () => "",
+        };
+      }
+      return {
+        ok: false,
+        status: 401,
+        headers: { get: () => null },
+        json: async () => ({}),
+        text: async () => "denied: anonymous token request not authorized",
+      };
+    }) as never;
+    const r = await call(buildApp(deps), "POST", "/api/settings/registries/test", {
+      presetId: "ghcr",
+      username: "wrong",
+      password: "creds",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(false);
+    expect(r.body.reason).toMatch(/401|denied/i);
+  });
+
+  it("POST /:id/test uses the saved password (no need to re-enter)", async () => {
+    const deps = setup();
+    await call(buildApp(deps), "POST", "/api/settings/registries", {
+      id: "ghcr-acme",
+      name: "GHCR",
+      presetId: "ghcr",
+      username: "octocat",
+      password: "saved-secret",
+    });
+    let sawAuthHeader: string | null = null;
+    deps.fetch = (async (url: string, init?: { headers?: Record<string, string> }) => {
+      if (url.includes("/token") || url.includes("/v2/")) {
+        sawAuthHeader = init?.headers?.authorization ?? null;
+      }
+      if (url === "https://ghcr.io/v2/") {
+        return {
+          ok: false,
+          status: 401,
+          headers: { get: (n: string) => (n.toLowerCase() === "www-authenticate" ? 'Bearer realm="https://ghcr.io/token",service="ghcr.io"' : null) },
+          json: async () => ({}),
+          text: async () => "",
+        };
+      }
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ token: "ok" }), text: async () => "" };
+    }) as never;
+    const r = await call(buildApp(deps), "POST", "/api/settings/registries/ghcr-acme/test", {});
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(true);
+    // Saved password reaches the token endpoint without being re-typed.
+    expect(sawAuthHeader).toContain(Buffer.from("octocat:saved-secret").toString("base64"));
+  });
+
   it("a viewer cannot read the credentials list (admin-only surface under /api/settings)", async () => {
     const { signJwt } = await import("../lib/jwt.ts");
     const { TEST_JWT_SECRET } = await import("./test-fakes.ts");
