@@ -192,6 +192,14 @@ export const http = {
       "POST",
       body,
     ),
+  testRegistrySource: (body: { presetId: string; registry?: string; region?: string; username: string; password: string }) =>
+    json<{ ok: boolean; host?: string; reason?: string }>("/settings/registries/test", "POST", body),
+  testSavedRegistrySource: (id: string, body: { password?: string } = {}) =>
+    json<{ ok: boolean; host?: string; reason?: string }>(
+      "/settings/registries/" + encodeURIComponent(id) + "/test",
+      "POST",
+      body,
+    ),
   templates: () => api<{ items: Template[] }>("/templates"),
   searchDockerHub: (q: string) =>
     api<{ items: DockerHubImage[] }>(`/templates/search?q=${encodeURIComponent(q)}`),

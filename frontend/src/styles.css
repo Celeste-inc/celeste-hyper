@@ -4426,6 +4426,22 @@ tr:hover td {
   }
 }
 
+@media (max-width: 360px) {
+  .network-editor .dialog-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .network-editor .dialog-actions > .hyper-button {
+    grid-column: 1;
+  }
+
+  .network-editor .dialog-actions > .hyper-button:last-child {
+    min-height: 44px;
+    white-space: normal;
+    line-height: 1.2;
+  }
+}
+
 /* ──────────── Skeleton loaders ──────────── */
 .skeleton {
   display: inline-block;

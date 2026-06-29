@@ -31,6 +31,7 @@ import { TemplateDeploy } from "../screens/modals/TemplateDeploy";
 import { Registries } from "../screens/modals/Registries";
 import { Scaling } from "../screens/modals/Scaling";
 import { NetworkingEdit } from "../screens/modals/NetworkingEdit";
+import { DeletePod } from "../screens/modals/DeletePod";
 import { Setup } from "../screens/modals/Setup";
 import { Terminal } from "../screens/modals/Terminal";
 import type { ModalActions, ModalState } from "../screens/types";
@@ -222,5 +223,6 @@ function renderModal(modal: ModalState, actions: ModalActions, clusters: Cluster
   if (modal.type === "discovery") return <Discovery {...actions} />;
   if (modal.type === "audit") return <AuditTimeline {...actions} />;
   if (modal.type === "terminal") return <Terminal name={modal.name} pod={modal.pod} container={modal.container} {...actions} />;
+  if (modal.type === "pod-delete") return <DeletePod name={modal.name} pod={modal.pod} {...actions} />;
   return <History name={modal.name} />;
 }

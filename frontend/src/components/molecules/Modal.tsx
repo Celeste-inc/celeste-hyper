@@ -1,16 +1,29 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { t } from "../../shared/i18n/t";
 
 export function Modal({ children, onClose }: { children: ReactNode; onClose: () => void }) {
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const titleId = useId();
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.style.overflow = "hidden";
     closeButtonRef.current?.focus();
+    const syncAccessibleName = () => {
+      const card = cardRef.current;
+      if (!card) return;
+      const heading = card.querySelector<HTMLElement>("h1, h2, h3");
+      if (!heading) return;
+      heading.id = titleId;
+      card.setAttribute("aria-labelledby", titleId);
+      card.removeAttribute("aria-label");
+    };
+    syncAccessibleName();
+    const labelObserver = new MutationObserver(syncAccessibleName);
+    if (cardRef.current) labelObserver.observe(cardRef.current, { childList: true, subtree: true });
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         onClose();
@@ -37,13 +50,14 @@ export function Modal({ children, onClose }: { children: ReactNode; onClose: () 
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", onKeyDown);
+      labelObserver.disconnect();
       previousFocus?.focus();
     };
-  }, [onClose]);
+  }, [onClose, titleId]);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div ref={cardRef} className="modal-card" role="dialog" aria-modal="true">
+      <div ref={cardRef} className="modal-card" role="dialog" aria-modal="true" aria-label={t("Dialog")}>
         <button ref={closeButtonRef} className="modal-close hyper-button ghost" type="button" aria-label={t("Close dialog")} onClick={onClose}><X size={16} /></button>
         <div className="modal-content">{children}</div>
       </div>

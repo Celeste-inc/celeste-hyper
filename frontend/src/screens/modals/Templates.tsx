@@ -24,7 +24,7 @@ export function Templates({ setModal, closeModal }: ModalActions) {
 
   const search = async () => {
     const q = query.trim();
-    if (!q) return;
+    if (!q || searching) return;
     setSearching(true);
     setHubError(null);
     const res = await http.searchDockerHub(q);

@@ -20,6 +20,7 @@ export type ModalState =
   | { type: "networking-edit"; name: string }
   | { type: "history"; name: string }
   | { type: "terminal"; name: string; pod: string; container: string }
+  | { type: "pod-delete"; name: string; pod: string }
   | { type: "integrations" }
   | { type: "setup" }
   | { type: "discovery" }

@@ -184,6 +184,53 @@ describe("ServiceDetail", () => {
     expect(screen.getByText("sollo-schedulers-abc12")).toBeTruthy();
   });
 
+  it("opens the system modal when deleting a pod", async () => {
+    const podName = "sollo-schedulers-5674d9f89b-6xr6t";
+    const setModal = vi.fn();
+    const browserConfirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(http, "service").mockResolvedValue({ status: 200, body: { service } } as never);
+    vi.spyOn(http, "deployments").mockResolvedValue({ status: 200, body: { items: [] } } as never);
+    vi.spyOn(http, "pods").mockResolvedValue({
+      status: 200,
+      body: {
+        selector: "app=sollo-schedulers",
+        items: [{
+          name: podName,
+          phase: "Running",
+          podIP: "10.42.1.18",
+          nodeName: "celeste-ai2",
+          containers: [{ name: "sollo-schedulers", image: card.cluster.containers[0]!.image, ready: true, restartCount: 0 }],
+        }],
+      },
+    } as never);
+    vi.spyOn(http, "events").mockResolvedValue({ status: 200, body: { items: [] } } as never);
+    vi.spyOn(http, "networking").mockResolvedValue({ status: 200, body: { service: null } } as never);
+    vi.spyOn(http, "rollbackPreview").mockResolvedValue({ status: 200, body: { eligible: false } } as never);
+    vi.spyOn(http, "autoRollbackStatus").mockResolvedValue({ status: 200, body: { pending: null, degraded: null } } as never);
+    vi.spyOn(http, "hpa").mockResolvedValue({ status: 200, body: { hpa: null } } as never);
+    vi.spyOn(http, "helm").mockResolvedValue({ status: 200, body: { helm: null } } as never);
+    vi.spyOn(http, "metrics").mockResolvedValue({ status: 409, body: { error: "n/a" } } as never);
+
+    render(
+      <ServiceDetail
+        name={service.name}
+        services={[card]}
+        clusterLabel={() => "Local"}
+        notify={vi.fn()}
+        onClose={vi.fn()}
+        setModal={setModal}
+        isObscured={false}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: service.name });
+    fireEvent.click(screen.getByRole("button", { name: "Runtime" }));
+    fireEvent.click(await screen.findByRole("button", { name: `Delete pod ${podName}` }));
+
+    expect(browserConfirm).not.toHaveBeenCalled();
+    expect(setModal).toHaveBeenCalledWith({ type: "pod-delete", name: service.name, pod: podName });
+  });
+
   it("opens a live deploy stream and shows the status progression when a deployment is active", async () => {
     vi.spyOn(http, "service").mockResolvedValue({ status: 200, body: { service } } as never);
     vi.spyOn(http, "deployments").mockResolvedValue({

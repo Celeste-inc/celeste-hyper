@@ -24,6 +24,8 @@ export function Registries({ notify, closeModal }: ModalActions) {
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; reason?: string; host?: string } | null>(null);
 
   const load = async () => {
     const [pres, src] = await Promise.all([http.registryPresets(), http.registrySources()]);
@@ -58,6 +60,32 @@ export function Registries({ notify, closeModal }: ModalActions) {
     setUsername(src.username);
     setEmail(src.email ?? "");
     setPassword(""); // password is never returned by the server — leave blank to preserve it
+  };
+
+  const testConnection = async () => {
+    if (!username.trim()) {
+      notify(t("Username is required to test the connection"), "bad");
+      return;
+    }
+    // For an unsaved source we need the operator's password. For an editing source with a blank
+    // password field, fall back to /:id/test which uses the stored value.
+    setTesting(true);
+    setTestResult(null);
+    const res = editingId && !password
+      ? await http.testSavedRegistrySource(editingId)
+      : await http.testRegistrySource({
+          presetId,
+          registry: registry.trim() || undefined,
+          region: region.trim() || undefined,
+          username: username.trim(),
+          password,
+        });
+    setTesting(false);
+    if (res.status >= 400) {
+      setTestResult({ ok: false, reason: apiError(res.body, res.status) });
+      return;
+    }
+    setTestResult(res.body);
   };
 
   const save = async () => {
@@ -123,6 +151,19 @@ export function Registries({ notify, closeModal }: ModalActions) {
               <span className="text-[var(--mut)]" style={{ fontSize: 12 }}>id <code>{src.id}</code> · {src.username}</span>
               <div style={{ display: "flex", gap: 8 }}>
                 <AppButton variant="ghost" onClick={() => edit(src)}>{t("Edit")}</AppButton>
+                <AppButton
+                  variant="ghost"
+                  onClick={async () => {
+                    setTesting(true);
+                    setTestResult(null);
+                    const res = await http.testSavedRegistrySource(src.id);
+                    setTesting(false);
+                    setTestResult(res.status >= 400 ? { ok: false, reason: apiError(res.body, res.status) } : res.body);
+                  }}
+                  disabled={testing}
+                >
+                  {t("Test")}
+                </AppButton>
                 <AppButton variant="danger" onClick={() => void remove(src.id)}>{t("Remove")}</AppButton>
               </div>
             </li>
@@ -156,9 +197,22 @@ export function Registries({ notify, closeModal }: ModalActions) {
       <Field id="rs-pass" label={preset?.auth.passwordLabel ?? t("Password")} value={password} onChange={setPassword} placeholder={editingId ? t("(leave blank to keep the saved value)") : undefined} />
       <Field id="rs-email" label={t("Email (optional)")} value={email} onChange={setEmail} />
 
+      {testResult ? (
+        <p className={`template-feedback ${testResult.ok ? "ok" : "bad"}`} role="status">
+          {testResult.ok
+            ? `${t("Conexão OK")}${testResult.host ? ` — ${testResult.host}` : ""}`
+            : `${t("Falhou")}: ${testResult.reason ?? t("erro desconhecido")}`}
+        </p>
+      ) : null}
+
       <div className="dialog-actions justify-between">
         <AppButton variant="ghost" onClick={editingId ? reset : closeModal}>{editingId ? t("Cancel edit") : t("Close")}</AppButton>
-        <AppButton onClick={save} disabled={busy}>{busy ? t("Saving…") : editingId ? t("Save changes") : t("Add registry")}</AppButton>
+        <div className="flex gap-2">
+          <AppButton variant="ghost" onClick={testConnection} disabled={testing || busy || !username.trim() || (!editingId && !password)}>
+            {testing ? t("Testando…") : t("Test connection")}
+          </AppButton>
+          <AppButton onClick={save} disabled={busy}>{busy ? t("Saving…") : editingId ? t("Save changes") : t("Add registry")}</AppButton>
+        </div>
       </div>
     </>
   );

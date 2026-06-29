@@ -229,12 +229,12 @@ function ServiceDetailContent({ service, card, deployments, pods, podGroups, eve
             </div>
           ) : null}
           <DetailSection icon={<Box size={16} />} title={t("Pods")} meta={`${pods.length} ${t("total")}`}>
-            {pods.length ? <PodsTable name={name} pods={pods} groups={podGroups} openModal={openModal} notify={notify} /> : <p className="detail-empty">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}
+            {pods.length ? <PodsTable name={name} pods={pods} groups={podGroups} openModal={openModal} /> : <p className="detail-empty">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}
           </DetailSection>
+          <DetailSection icon={<SquareTerminal size={16} />} title={t("Live logs")}><LogsPanel serviceName={name} pods={pods} groups={podGroups} /></DetailSection>
           <DetailSection icon={<ListTree size={16} />} title={t("Events")} meta={warningEvents.length ? `${warningEvents.length} ${t("warnings")}` : undefined}>
             {events.length ? <EventsTable items={events} /> : <p className="detail-empty">{t("No recent events for pods backing this service.")}</p>}
           </DetailSection>
-          <DetailSection icon={<SquareTerminal size={16} />} title={t("Live logs")}><LogsPanel serviceName={name} pods={pods} groups={podGroups} /></DetailSection>
           <DetailSection icon={<Clock3 size={16} />} title={t("Recent deployments")}>{deployments.length ? <DeploymentTable items={deployments} /> : <p className="detail-empty">{t("No deployments yet.")}</p>}</DetailSection>
         </div>
       ) : null}
@@ -877,19 +877,10 @@ function podStatusPill(pod: PodSummary): { tone: "ok" | "warn" | "bad"; label: s
   return { tone: ok ? "ok" : "warn", label: pod.phase };
 }
 
-function PodRow({ name, pod, openModal, notify }: { name: string; pod: PodSummary; openModal: (modal: ModalState) => void; notify: Notify }) {
+function PodRow({ name, pod, openModal }: { name: string; pod: PodSummary; openModal: (modal: ModalState) => void }) {
   const restarts = pod.containers.reduce((sum, item) => sum + (item.restartCount || 0), 0);
   const status = podStatusPill(pod);
   const container = pod.containers[0]?.name;
-  const remove = async () => {
-    if (!window.confirm(`Delete pod ${pod.name}? The Deployment controller will create a replacement.`)) return;
-    const res = await http.deletePod(name, pod.name);
-    if (res.status >= 400) {
-      notify(apiError(res.body, res.status), "bad");
-      return;
-    }
-    notify(t("Pod scheduled for deletion"));
-  };
   return (
     <article className={`pod-row ${status.tone}`} key={pod.name}>
       <span className="pod-status-dot" aria-hidden="true" />
@@ -899,17 +890,17 @@ function PodRow({ name, pod, openModal, notify }: { name: string; pod: PodSummar
       <div className="pod-fact"><span>{t("Node")}</span><strong>{pod.nodeName || "—"}</strong></div>
       <div className={`pod-fact pod-restarts ${restarts ? "bad" : ""}`}><span>{t("Restarts")}</span><strong>{restarts}</strong></div>
       {container ? <button className="icon-button" type="button" aria-label={`Open terminal for ${pod.name}`} onClick={() => openModal({ type: "terminal", name, pod: pod.name, container })}><SquareTerminal size={16} /></button> : null}
-      <button className="icon-button" type="button" aria-label={`Delete pod ${pod.name}`} title={t("Delete pod")} onClick={() => void remove()}><Trash2 size={16} /></button>
+      <button className="icon-button" type="button" aria-label={`Delete pod ${pod.name}`} title={t("Delete pod")} onClick={() => openModal({ type: "pod-delete", name, pod: pod.name })}><Trash2 size={16} /></button>
     </article>
   );
 }
 
-function PodsTable({ name, pods, groups, openModal, notify }: { name: string; pods: PodSummary[]; groups: PodGroup[]; openModal: (modal: ModalState) => void; notify: Notify }) {
+function PodsTable({ name, pods, groups, openModal }: { name: string; pods: PodSummary[]; groups: PodGroup[]; openModal: (modal: ModalState) => void }) {
   // No groups (old API), or only the primary → render flat. Two or more groups → render with a
   // subheader per workload so the operator sees which Deployment each pod belongs to.
   const grouped = groups.filter((g) => g.pods.length > 0);
   if (grouped.length <= 1) {
-    return <div className="pod-list">{pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} notify={notify} />)}</div>;
+    return <div className="pod-list">{pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} />)}</div>;
   }
   return (
     <div className="pod-list">
@@ -921,7 +912,7 @@ function PodsTable({ name, pods, groups, openModal, notify }: { name: string; po
             <Tag>{group.kind}</Tag>
             <small>{group.pods.length} {group.pods.length === 1 ? t("pod") : t("pods")}</small>
           </header>
-          {group.pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} notify={notify} />)}
+          {group.pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} />)}
         </div>
       ))}
     </div>
