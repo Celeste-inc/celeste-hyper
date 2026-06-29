@@ -221,7 +221,7 @@ describe("registry source admin endpoints", () => {
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
     // Saved password reaches the token endpoint without being re-typed.
-    expect(sawAuthHeader).toContain(Buffer.from("octocat:saved-secret").toString("base64"));
+    expect(sawAuthHeader ?? "").toContain(Buffer.from("octocat:saved-secret").toString("base64"));
   });
 
   it("a viewer cannot read the credentials list (admin-only surface under /api/settings)", async () => {
