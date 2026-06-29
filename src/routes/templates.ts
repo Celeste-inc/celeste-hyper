@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ApiDeps } from "./deps.ts";
 import {
   TEMPLATES,
+  renderCustomManifests,
   renderTemplateManifests,
   templateById,
   type RenderedManifests,
@@ -39,6 +40,10 @@ const DeployBody = z
     imagePullSecret: z.string().min(1).optional(),
     /** Link a stored registry source — Hyper provisions its imagePullSecret on the target cluster + namespace before applying the workload. */
     registrySourceId: z.string().min(1).optional(),
+    /** When templateId === "custom": the arbitrary image ref to deploy (e.g. from a Docker Hub search). */
+    customImage: z.string().min(1).max(512).optional(),
+    /** When templateId === "custom": the containerPort + Service port. */
+    customPort: z.number().int().min(1).max(65535).optional(),
   })
   .strict();
 
@@ -88,13 +93,29 @@ export const templateRoutes = (deps: ApiDeps) =>
       async ({ body, status }) => {
         const parsed = DeployBody.safeParse(body ?? {});
         if (!parsed.success) return status(422, { error: "invalid body", issues: parsed.error.issues });
-        if (!templateById(parsed.data.templateId)) return status(422, { error: `unknown template '${parsed.data.templateId}'` });
+        const isCustom = parsed.data.templateId === "custom";
+        const tpl = isCustom ? null : templateById(parsed.data.templateId);
+        if (!isCustom && !tpl) return status(422, { error: `unknown template '${parsed.data.templateId}'` });
+        if (isCustom && !parsed.data.customImage) return status(422, { error: "customImage is required when templateId is 'custom'" });
         if (!deps.clusters.get(parsed.data.clusterId)) return status(400, { error: `cluster '${parsed.data.clusterId}' not found` });
         const k8s = deps.pool.get(parsed.data.clusterId);
         if (!k8s) return status(400, { error: `cluster '${parsed.data.clusterId}' not configured` });
 
-        const tpl = templateById(parsed.data.templateId)!;
-        const tagToDeploy = parsed.data.tag ?? tpl.defaultTag;
+        const customPort = parsed.data.customPort ?? 80;
+        const imageRef = isCustom ? parsed.data.customImage! : tpl!.image;
+        const tagToDeploy = parsed.data.tag ?? (isCustom ? "latest" : tpl!.defaultTag);
+
+        // Ensure the target namespace exists — common usability win (operators forget to kubectl
+        // create ns first). create-or-update via apply so re-runs are idempotent.
+        const nsManifest = {
+          apiVersion: "v1",
+          kind: "Namespace",
+          metadata: { name: parsed.data.namespace, labels: { "celeste.dev/managed": "true" } },
+        };
+        const nsRes = await k8s.applyManifest(yamlStringify(nsManifest));
+        if (nsRes.code !== 0) {
+          return status(502, { error: `failed to ensure namespace '${parsed.data.namespace}': ${(nsRes.stderr || nsRes.stdout).trim().slice(0, 200)}` });
+        }
 
         // If a registry source is linked, materialise its imagePullSecret on the target ns BEFORE applying
         // the workload — so the kubelet has credentials when it tries to pull the private image.
@@ -129,17 +150,30 @@ export const templateRoutes = (deps: ApiDeps) =>
 
         let manifests: RenderedManifests;
         try {
-          manifests = renderTemplateManifests({
-            templateId: parsed.data.templateId,
-            name: parsed.data.name,
-            namespace: parsed.data.namespace,
-            replicas: parsed.data.replicas,
-            tag: parsed.data.tag,
-            env: parsed.data.env,
-            serviceType: parsed.data.serviceType,
-            autoscale: parsed.data.autoscale,
-            imagePullSecret: resolvedImagePullSecret,
-          });
+          manifests = isCustom
+            ? renderCustomManifests({
+                image: parsed.data.customImage!,
+                port: customPort,
+                name: parsed.data.name,
+                namespace: parsed.data.namespace,
+                replicas: parsed.data.replicas,
+                tag: parsed.data.tag,
+                env: parsed.data.env,
+                serviceType: parsed.data.serviceType,
+                autoscale: parsed.data.autoscale,
+                imagePullSecret: resolvedImagePullSecret,
+              })
+            : renderTemplateManifests({
+                templateId: parsed.data.templateId,
+                name: parsed.data.name,
+                namespace: parsed.data.namespace,
+                replicas: parsed.data.replicas,
+                tag: parsed.data.tag,
+                env: parsed.data.env,
+                serviceType: parsed.data.serviceType,
+                autoscale: parsed.data.autoscale,
+                imagePullSecret: resolvedImagePullSecret,
+              });
         } catch (e) {
           return status(422, { error: (e as Error).message });
         }
@@ -154,7 +188,7 @@ export const templateRoutes = (deps: ApiDeps) =>
             name: parsed.data.name,
             namespace: parsed.data.namespace,
             clusterId: parsed.data.clusterId,
-            imageRef: tpl.image,
+            imageRef,
             workloadKind: "Deployment",
             workloadName: parsed.data.name,
             containerName: parsed.data.name,
@@ -171,16 +205,20 @@ export const templateRoutes = (deps: ApiDeps) =>
         // can mutate them post-deploy. The Secret/ConfigMap manifests we just applied carry the
         // initial values; the env-files become the source-of-truth for subsequent edits.
         try {
-          const tplDef = tpl;
           const providedEnv = parsed.data.env ?? {};
           const configRows: envFiles.EnvRow[] = [];
           const secretRows: envFiles.EnvRow[] = [];
-          for (const e of tplDef.env) {
-            const value = providedEnv[e.key] ?? e.default;
-            if (value === undefined) continue;
-            const row: envFiles.EnvRow = { key: e.key, value, description: e.description };
-            if (e.secret) secretRows.push(row);
-            else configRows.push(row);
+          if (tpl) {
+            for (const e of tpl.env) {
+              const value = providedEnv[e.key] ?? e.default;
+              if (value === undefined) continue;
+              const row: envFiles.EnvRow = { key: e.key, value, description: e.description };
+              if (e.secret) secretRows.push(row);
+              else configRows.push(row);
+            }
+          } else {
+            // Custom image: we don't know which keys are secret-shaped, so persist everything as config.env.
+            for (const [k, v] of Object.entries(providedEnv)) configRows.push({ key: k, value: v });
           }
           if (configRows.length > 0) {
             await envFiles.write(deps.cfg.envFilesDir, parsed.data.name, "config", envFiles.serializeRows(configRows).content);

@@ -211,7 +211,33 @@ export const serviceRoutes = (deps: ApiDeps) =>
           ? await purgeService(svc, { k8s: k8s as never, envFilesDir: deps.cfg.envFilesDir, dryRun })
           : { removed: [], failed: [{ resource: "cluster", reason: `cluster '${svc.clusterId}' not configured` }], planned: [] };
         if (!dryRun) deps.registry.delete(svc.name);
-        return { ok: true, purge };
+
+        // If no other managed service still lives in this namespace AND the namespace looks
+        // celeste-managed (label) AND the cluster contains no foreign workloads in it, prune the
+        // namespace too — leaving an empty `staging`/`team-x` ns around is just noise.
+        let namespacePurged = false;
+        if (!dryRun && k8s) {
+          const otherServicesInNs = deps.registry
+            .list()
+            .some((other) => other.clusterId === svc.clusterId && other.namespace === svc.namespace);
+          if (!otherServicesInNs) {
+            const nsR = await (k8s as { kubectl(args: string[]): Promise<{ code: number; stdout: string }> })
+              .kubectl(["-n", svc.namespace, "get", "namespace", svc.namespace, "-o", "jsonpath={.metadata.labels.celeste\\.dev/managed}"]);
+            const isManagedNs = nsR.code === 0 && nsR.stdout.trim() === "true";
+            if (isManagedNs) {
+              const workloads = await (k8s as { kubectl(args: string[]): Promise<{ code: number; stdout: string }> })
+                .kubectl(["-n", svc.namespace, "get", "deployments,statefulsets,daemonsets", "-o", "name", "--ignore-not-found"]);
+              const orphan = workloads.code === 0 && !workloads.stdout.trim();
+              if (orphan) {
+                const del = await (k8s as { kubectl(args: string[]): Promise<{ code: number; stdout: string }> })
+                  .kubectl(["delete", "namespace", "--ignore-not-found", "--wait=false", "--", svc.namespace]);
+                namespacePurged = del.code === 0;
+              }
+            }
+          }
+        }
+
+        return { ok: true, purge, namespacePurged };
       },
       { detail: { summary: "Delete a service and purge its cluster resources (workload, Service, CM, Secret, HPA, Ingress, env files)", tags } },
     )

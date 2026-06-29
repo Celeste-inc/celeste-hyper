@@ -240,6 +240,93 @@ function validateAutoscale(a: AutoscaleSpec): void {
   }
 }
 
+export interface CustomDeployInput {
+  image: string;
+  port: number;
+  name: string;
+  namespace: string;
+  tag?: string;
+  replicas: number;
+  env?: Record<string, string>;
+  serviceType?: "ClusterIP" | "NodePort" | "LoadBalancer";
+  autoscale?: AutoscaleSpec;
+  imagePullSecret?: string;
+}
+
+const CUSTOM_IMAGE_RE = /^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(\/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$/;
+
+/** Deploy an arbitrary image from a Docker Hub search hit — no catalog entry required. The image
+ *  reference is validated against a conservative charset (no flag-injection risk on kubectl apply). */
+export function renderCustomManifests(input: CustomDeployInput): RenderedManifests {
+  validateName(input.name);
+  validateReplicas(input.replicas);
+  if (input.autoscale) validateAutoscale(input.autoscale);
+  if (!CUSTOM_IMAGE_RE.test(input.image)) throw new Error(`invalid image reference '${input.image}'`);
+  if (input.port < 1 || input.port > 65535) throw new Error(`port out of range (1..65535): ${input.port}`);
+
+  const tag = input.tag ?? "latest";
+  const labels = { app: input.name, "celeste.dev/template": "custom" };
+  const portName = "app";
+  const containerEnv: Array<{ name: string; value?: string }> = [];
+  for (const [k, v] of Object.entries(input.env ?? {})) containerEnv.push({ name: k, value: v });
+
+  const deployment: RenderedDeployment = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: input.name, namespace: input.namespace, labels },
+    spec: {
+      replicas: input.replicas,
+      selector: { matchLabels: { app: input.name } },
+      template: {
+        metadata: { labels },
+        spec: {
+          ...(input.imagePullSecret ? { imagePullSecrets: [{ name: input.imagePullSecret }] } : {}),
+          containers: [
+            {
+              name: input.name,
+              image: `${input.image}:${tag}`,
+              ports: [{ name: portName, containerPort: input.port, protocol: "TCP" }],
+              ...(containerEnv.length ? { env: containerEnv } : {}),
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  const service: RenderedService = {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: { name: input.name, namespace: input.namespace, labels },
+    spec: {
+      type: input.serviceType ?? "ClusterIP",
+      selector: { app: input.name },
+      ports: [{ name: portName, port: input.port, targetPort: input.port, protocol: "TCP" }],
+    },
+  };
+
+  const manifests: RenderedManifests = { deployment, service };
+  if (input.autoscale) {
+    manifests.hpa = {
+      apiVersion: "autoscaling/v2",
+      kind: "HorizontalPodAutoscaler",
+      metadata: { name: input.name, namespace: input.namespace },
+      spec: {
+        scaleTargetRef: { apiVersion: "apps/v1", kind: "Deployment", name: input.name },
+        minReplicas: input.autoscale.minReplicas,
+        maxReplicas: input.autoscale.maxReplicas,
+        metrics: [
+          {
+            type: "Resource",
+            resource: { name: "cpu", target: { type: "Utilization", averageUtilization: input.autoscale.targetCPUUtilizationPercentage } },
+          },
+        ],
+      },
+    };
+  }
+  return manifests;
+}
+
 export function renderTemplateManifests(input: TemplateDeployInput): RenderedManifests {
   const tpl = templateById(input.templateId);
   if (!tpl) throw new Error(`unknown template '${input.templateId}'`);
