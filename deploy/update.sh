@@ -74,7 +74,7 @@ if [ "$(id -u)" != "0" ]; then
   exit 1
 fi
 
-log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+log() { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
 err() { printf '\033[1;31m!!\033[0m %s\n' "$*" >&2; }
 
@@ -98,10 +98,25 @@ uses_systemd() {
 }
 
 current_version() {
-  if [ -x "${CURRENT_BINARY}" ]; then
-    "${CURRENT_BINARY}" --version 2>/dev/null || echo "unknown"
+  # Never invoke the binary to read the current version — older binaries don't recognise --version,
+  # fall through to a normal boot, hit the DB lock, and pollute stdout with JSON log lines. The
+  # bootstrap + this script both persist the installed git sha at ${PREFIX}/.installed-rev; read
+  # that, or report "<unknown>" if the file isn't there yet.
+  local rev_file="${PREFIX}/.installed-rev"
+  if [ -f "${rev_file}" ]; then
+    cat "${rev_file}" 2>/dev/null || echo "<unknown>"
   else
-    echo "<not installed>"
+    echo "<unknown>"
+  fi
+}
+
+record_installed_rev() {
+  # Record the rev the script just installed so subsequent calls can report it without invoking the
+  # binary. Best-effort: a failure here doesn't fail the update.
+  install -d -m 0755 "${PREFIX}"
+  if [ -d "${SRC_DIR}/.git" ]; then
+    local rev; rev="$(git -C "${SRC_DIR}" rev-parse HEAD 2>/dev/null || echo "<unknown>")"
+    echo "${rev}" > "${PREFIX}/.installed-rev" || true
   fi
 }
 
@@ -185,7 +200,7 @@ resolve_new_binary() {
         err "binary not found at ${INPUT_BINARY}"
         exit 1
       fi
-      echo "${INPUT_BINARY}"
+      printf '%s\n' "${INPUT_BINARY}"
       ;;
     from-source)
       if [ ! -d "${SRC_DIR}/.git" ]; then
@@ -193,20 +208,30 @@ resolve_new_binary() {
         exit 1
       fi
       log "updating source at ${SRC_DIR} → ${REF}"
-      git -C "${SRC_DIR}" fetch --tags --prune --depth=1 origin "${REF}"
-      git -C "${SRC_DIR}" reset --hard FETCH_HEAD
-      git -C "${SRC_DIR}" clean -fd -e node_modules -e frontend/node_modules
+      if ! git -C "${SRC_DIR}" fetch --tags --prune --depth=1 origin "${REF}" 2>&1 >/dev/null; then
+        err "git fetch failed for ref '${REF}' — does it exist on origin?"
+        err "list remote tags with:  git -C ${SRC_DIR} ls-remote --tags origin"
+        exit 1
+      fi
+      git -C "${SRC_DIR}" reset --hard FETCH_HEAD >&2
+      git -C "${SRC_DIR}" clean -fd -e node_modules -e frontend/node_modules >&2
       local rev; rev="$(git -C "${SRC_DIR}" rev-parse HEAD)"
       log "source revision ${rev}"
       if ! command -v bun >/dev/null 2>&1; then
         err "bun not found in PATH — install bun first or use --binary"
         exit 1
       fi
-      log "installing deps + building celeste-hyper-linux-${ARCH}"
-      ( cd "${SRC_DIR}" && bun install --frozen-lockfile >/dev/null )
-      ( cd "${SRC_DIR}/frontend" && bun install --frozen-lockfile >/dev/null )
-      ( cd "${SRC_DIR}" && bun run "build:linux-${ARCH}" >/dev/null )
-      echo "${SRC_DIR}/build/celeste-hyper-linux-${ARCH}"
+      log "installing deps + building celeste-hyper-linux-${ARCH} (this can take 1–3 min)"
+      # Send all build noise to stderr so the only thing on stdout is the final path.
+      ( cd "${SRC_DIR}" && bun install --frozen-lockfile ) >&2
+      ( cd "${SRC_DIR}/frontend" && bun install --frozen-lockfile ) >&2
+      ( cd "${SRC_DIR}" && bun run "build:linux-${ARCH}" ) >&2
+      local out="${SRC_DIR}/build/celeste-hyper-linux-${ARCH}"
+      if [ ! -f "${out}" ]; then
+        err "build did not produce ${out}"
+        exit 1
+      fi
+      printf '%s\n' "${out}"
       ;;
     *) err "internal: unknown mode ${MODE}"; exit 1 ;;
   esac
@@ -221,15 +246,26 @@ apply_update() {
     exit 1
   fi
 
-  # Pre-flight 1: --version must work. If this crashes the binary won't even boot.
+  # Pre-flight 1: --version must work. HYPER_CONFIG=/dev/null + a 10s timeout guard against a build
+  # that silently shipped without the --version handler: such a binary would fall through to a real
+  # boot, fail-fast on the unreadable config, and exit non-zero — caught here, install untouched.
   log "verifying new binary: ${new_binary} --version"
   local new_version
-  if ! new_version="$( "${new_binary}" --version 2>&1 )"; then
+  if ! new_version="$( HYPER_CONFIG=/dev/null timeout 10 "${new_binary}" --version 2>&1 )"; then
     err "new binary failed --version probe — refusing to install"
-    err "output: ${new_version}"
+    err "output (first 8 lines):"
+    echo "${new_version}" | head -8 >&2
     exit 1
   fi
-  log "new binary version: ${new_version}"
+  # Sanity check: a real --version response starts with "celeste-hyper v". Anything else means the
+  # binary ignored the flag and printed something else first (e.g. boot log).
+  if ! echo "${new_version}" | grep -q '^celeste-hyper v'; then
+    err "new binary did not respond to --version with a version string — refusing to install"
+    err "output (first 8 lines):"
+    echo "${new_version}" | head -8 >&2
+    exit 1
+  fi
+  log "new binary version: $(echo "${new_version}" | head -1)"
 
   if [ "${CHECK_ONLY}" = "true" ]; then
     log "--check requested; not modifying the install"
@@ -258,6 +294,7 @@ apply_update() {
   restart_service
 
   if healthcheck; then
+    record_installed_rev
     log "update applied: $(current_version)"
     exit 0
   fi
