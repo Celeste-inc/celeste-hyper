@@ -15,8 +15,31 @@ Idempotent — re-run the same command to pull the latest `main` and roll out th
 ## Update
 
 ```bash
- sudo INSTALL_KUBECTL=false bash -c 'cd /opt/celeste-hyper/source && git pull && bun install && bun run build:linux-x64 && install -m 0755 build/celeste-hyper-linux-x64 /opt/celeste-hyper/bin/celeste-hyper && systemctl restart celeste-hyper'
-``` 
+sudo /opt/celeste-hyper/source/deploy/update.sh
+```
+
+The script is idempotent and **does not touch** `/etc/celeste-hyper/config.json`,
+the env files, or the cluster's running workloads. It runs `--version` on
+the new binary as a pre-flight, snapshots `state.sqlite` to
+`state.sqlite.pre-update.<ts>`, atomically swaps the binary, and rolls
+back automatically if the API does not answer within 60 s of the restart.
+
+Common variants:
+
+```bash
+# pin a ref (branch / tag / sha)
+sudo /opt/celeste-hyper/source/deploy/update.sh --ref v0.2.0
+
+# install a prebuilt binary you uploaded out-of-band
+sudo /opt/celeste-hyper/source/deploy/update.sh --binary /tmp/celeste-hyper-linux-x64
+
+# dry-run: build + verify but don't install
+sudo /opt/celeste-hyper/source/deploy/update.sh --check
+
+# undo the last update
+sudo /opt/celeste-hyper/source/deploy/update.sh --rollback
+```
+
 
 Common overrides:
 
