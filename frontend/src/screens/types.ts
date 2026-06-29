@@ -16,6 +16,7 @@ export type ModalState =
   | { type: "ingress-yaml"; clusterId: string; namespace: string; name: string }
   | { type: "crds"; clusterId: string }
   | { type: "hpa"; name: string; hpa: HpaView }
+  | { type: "scaling"; name: string }
   | { type: "networking-edit"; name: string }
   | { type: "history"; name: string }
   | { type: "terminal"; name: string; pod: string; container: string }

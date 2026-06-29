@@ -501,9 +501,13 @@ function AutoscalingPanel({ name, openModal }: { name: string; openModal: (modal
             ]}
           />
           <AppButton variant="ghost" onClick={() => openModal({ type: "hpa", name, hpa })}><Gauge size={15} />{t("Edit autoscaling")}</AppButton>
+          <AppButton variant="ghost" onClick={() => openModal({ type: "scaling", name })}><Gauge size={15} />{t("Scaling (vertical + PVC)")}</AppButton>
         </>
       ) : (
-        <p className="text-[var(--mut)]">{t("No HorizontalPodAutoscaler targets this workload.")}</p>
+        <>
+          <p className="text-[var(--mut)]">{t("No HorizontalPodAutoscaler targets this workload.")}</p>
+          <AppButton variant="ghost" onClick={() => openModal({ type: "scaling", name })}><Gauge size={15} />{t("Scaling (vertical + PVC)")}</AppButton>
+        </>
       )}
     </DetailSection>
   );

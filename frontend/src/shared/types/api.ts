@@ -187,6 +187,25 @@ export interface RegistrySourceSummary {
   secretConfigured: boolean;
 }
 
+export interface ScalingPvc {
+  name: string;
+  storageClass: string | null;
+  accessModes: string[];
+  requested: string;
+  expandable: boolean | null;
+}
+
+export interface ScalingCapability {
+  horizontal: boolean;
+  vertical: boolean;
+  reasons: string[];
+  resources: {
+    requests: { cpu?: string; memory?: string; "ephemeral-storage"?: string };
+    limits: { cpu?: string; memory?: string; "ephemeral-storage"?: string };
+  };
+  pvcs: ScalingPvc[];
+}
+
 export interface RegistrySourceInput {
   id: string;
   name: string;

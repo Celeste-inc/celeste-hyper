@@ -29,6 +29,7 @@ import { DeleteService } from "../screens/modals/DeleteService";
 import { Templates } from "../screens/modals/Templates";
 import { TemplateDeploy } from "../screens/modals/TemplateDeploy";
 import { Registries } from "../screens/modals/Registries";
+import { Scaling } from "../screens/modals/Scaling";
 import { NetworkingEdit } from "../screens/modals/NetworkingEdit";
 import { Setup } from "../screens/modals/Setup";
 import { Terminal } from "../screens/modals/Terminal";
@@ -207,6 +208,7 @@ function renderModal(modal: ModalState, actions: ModalActions, clusters: Cluster
   if (modal.type === "templates") return <Templates {...actions} />;
   if (modal.type === "template-deploy") return <TemplateDeploy templateId={modal.templateId} image={modal.image} clusters={clusters} {...actions} />;
   if (modal.type === "registries") return <Registries {...actions} />;
+  if (modal.type === "scaling") return <Scaling name={modal.name} {...actions} />;
   if (modal.type === "networking-edit") return <NetworkingEdit name={modal.name} {...actions} />;
   if (modal.type === "deploy") return <Deploy name={modal.name} {...actions} />;
   if (modal.type === "rollback") return <Rollback name={modal.name} {...actions} />;

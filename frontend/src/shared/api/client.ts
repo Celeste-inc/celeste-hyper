@@ -12,6 +12,7 @@ import type {
   RegistryPreset,
   RegistrySourceInput,
   RegistrySourceSummary,
+  ScalingCapability,
   Template,
   TemplateDeployResponse,
   Deployment,
@@ -109,6 +110,24 @@ export const http = {
     api<{ ok: true; pod: string; message: string }>(
       `/services/${encodeURIComponent(name)}/pods/${encodeURIComponent(pod)}`,
       { method: "DELETE" },
+    ),
+  scalingCapability: (name: string) => api<ScalingCapability>(`/services/${encodeURIComponent(name)}/scaling-capability`),
+  patchResources: (
+    name: string,
+    body: {
+      requests?: { cpu?: string; memory?: string; "ephemeral-storage"?: string };
+      limits?: { cpu?: string; memory?: string; "ephemeral-storage"?: string };
+    },
+  ) => json<{ ok: true; requests: Record<string, string>; limits: Record<string, string>; message: string }>(
+    `/services/${encodeURIComponent(name)}/resources`,
+    "PATCH",
+    body,
+  ),
+  expandPvc: (name: string, pvc: string, to: string) =>
+    json<{ ok: true; pvc: string; from: string; to: string; message: string }>(
+      `/services/${encodeURIComponent(name)}/pvcs/${encodeURIComponent(pvc)}`,
+      "PATCH",
+      { to },
     ),
   redeploy: (name: string) =>
     json<{ ok: true; deploymentId: number; currentTag: string }>(

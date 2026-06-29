@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { CheckCircle2, Info, Network, Route, Server } from "lucide-react";
 import { http } from "../../shared/api/client";
 import type { NetworkingService } from "../../shared/types/api";
 import { AppButton } from "../../components/atoms/AppButton";
@@ -75,75 +76,114 @@ export function NetworkingEdit({ name, notify, closeModal, load }: ModalActions 
     await load();
   };
 
+  const currentPort = current?.ports?.[0];
+  const typeDescription = type === "ClusterIP"
+    ? t("Acessível somente por outros workloads dentro do cluster.")
+    : type === "NodePort"
+      ? t("Expõe o serviço em todos os nós usando uma porta entre 30000 e 32767.")
+      : t("Solicita um load balancer ao provedor de infraestrutura do cluster.");
+
   return (
-    <>
-      <h2 className="dialog-title">{t("Networking")}: <code>{name}</code></h2>
-      <p className="dialog-description">
-        {t("Ajustes feitos sem recriar o workload — pods rolam um a um, dados persistentes ficam intactos. O LB nativo (kube-proxy) repassa a nova porta para todas as réplicas via selector app=") + name + "."}
-      </p>
+    <div className="network-editor">
+      <header className="network-editor-header">
+        <span className="network-editor-icon" aria-hidden="true"><Network size={21} /></span>
+        <div>
+          <span className="network-editor-eyebrow">{t("Service networking")}</span>
+          <h2 className="dialog-title">{t("Edit networking")}</h2>
+          <p>{t("Configure como o tráfego chega ao serviço sem recriar o workload ou alterar dados persistentes.")}</p>
+        </div>
+      </header>
+
       {current ? (
-        <p className="dialog-description">
-          {t("Atual")}: <Pill tone="acc">{current.type}</Pill> · <Tag>:{current.ports?.[0]?.port ?? "—"}</Tag>
-          {current.ports?.[0]?.nodePort ? <> → <Tag>NodePort {current.ports[0].nodePort}</Tag></> : null}
-        </p>
+        <section className="network-current" aria-label={t("Current networking configuration")}>
+          <div className="network-current-title">
+            <span><Server size={15} /></span>
+            <div><small>{t("Current configuration")}</small><strong>{name}</strong></div>
+          </div>
+          <dl>
+            <div><dt>{t("Type")}</dt><dd><Pill tone="acc">{current.type}</Pill></dd></div>
+            <div><dt>{t("Service port")}</dt><dd><Tag>:{currentPort?.port ?? "—"}</Tag></dd></div>
+            <div><dt>{t("Target port")}</dt><dd><Tag>{currentPort?.targetPort ?? "—"}</Tag></dd></div>
+            {currentPort?.nodePort ? <div><dt>NodePort</dt><dd><Tag>:{currentPort.nodePort}</Tag></dd></div> : null}
+          </dl>
+        </section>
       ) : null}
 
-      <SelectField
-        id="net-type"
-        label={t("Service type (LB nativo)")}
-        value={type}
-        onChange={(v) => setType(v as typeof type)}
-        options={[
-          { value: "ClusterIP", label: "ClusterIP — só dentro do cluster" },
-          { value: "NodePort", label: "NodePort — expõe na rede dos nós (30000-32767)" },
-          { value: "LoadBalancer", label: "LoadBalancer — cloud LB se disponível" },
-        ]}
-      />
-      <Field id="net-port" label={t("Service port (a porta visível para clientes)")} value={port} onChange={setPort} placeholder="ex: 80" />
-      <Field id="net-target" label={t("Target port (containerPort no pod)")} value={targetPort} onChange={setTargetPort} placeholder={t("número ou nome da porta nomeada")} />
-      {type !== "ClusterIP" ? (
-        <>
-          <Field id="net-node" label={t("NodePort (30000-32767, deixe em branco para auto)")} value={nodePort} onChange={setNodePort} />
-          <p className="text-[var(--mut)]" style={{ fontSize: 12, marginTop: -4 }}>
-            {t("Limite do kube-apiserver. Para expor numa porta arbitrária (ex: 80, 8090) na sua rede, use External IPs abaixo.")}
-          </p>
-        </>
-      ) : null}
+      <section className="network-section">
+        <header>
+          <span aria-hidden="true"><Route size={16} /></span>
+          <div><h3>{t("Traffic routing")}</h3><p>{t("Defina o tipo de exposição e o mapeamento entre cliente e container.")}</p></div>
+        </header>
+        <div className="network-section-body">
+          <SelectField
+            id="net-type"
+            label={t("Service type")}
+            hint={typeDescription}
+            value={type}
+            onChange={(v) => setType(v as typeof type)}
+            options={[
+              { value: "ClusterIP", label: "ClusterIP — somente dentro do cluster" },
+              { value: "NodePort", label: "NodePort — acesso pela rede dos nós" },
+              { value: "LoadBalancer", label: "LoadBalancer — balanceador do provedor" },
+            ]}
+          />
+          <div className="network-port-grid">
+            <Field id="net-port" label={t("Service port")} hint={t("Porta visível para os clientes.")} value={port} onChange={setPort} placeholder="80" />
+            <Field id="net-target" label={t("Target port")} hint={t("Porta numérica ou nomeada no container.")} value={targetPort} onChange={setTargetPort} placeholder="8080 ou http" />
+            {type !== "ClusterIP" ? (
+              <Field id="net-node" label="NodePort" hint={t("Opcional. Em branco, o Kubernetes escolhe automaticamente.")} value={nodePort} onChange={setNodePort} placeholder="30000–32767" />
+            ) : null}
+          </div>
+          {type !== "ClusterIP" ? (
+            <div className="network-note"><Info size={15} /><span>{t("Para expor uma porta arbitrária na rede local, como 80 ou 8090, use External IPs abaixo.")}</span></div>
+          ) : null}
+        </div>
+      </section>
 
-      <Field
-        id="net-extips"
-        label={t("External IPs (um por linha, opcional)")}
-        value={externalIPs}
-        onChange={setExternalIPs}
-        placeholder={suggestedIPs.length ? suggestedIPs.join("\n") : t("ex: 192.168.0.42 (descubra com: kubectl get nodes -o wide)")}
-        multiline
-      />
-      <p className="text-[var(--mut)]" style={{ fontSize: 12, marginTop: -4 }}>
-        {t("kube-proxy faz cada node escutar na Service port nessas IPs — funciona com qualquer porta (80, 8090, etc), sem o limite do NodePort. Deixe em branco para desativar.")}
-        {suggestedIPs.length ? (
-          <>
-            {" "}
-            <strong>{t("Sugestões do cluster")}:</strong> {suggestedIPs.map((ip) => (
-              <button
-                key={ip}
-                type="button"
-                className="ip-suggestion"
-                style={{ background: "transparent", border: "1px solid var(--mut)", borderRadius: 4, padding: "1px 6px", margin: "0 4px", cursor: "pointer", fontSize: 11 }}
-                onClick={() => setExternalIPs((curr) => (curr.includes(ip) ? curr : (curr ? curr + "\n" : "") + ip))}
-              >
-                {ip}
-              </button>
-            ))}
-          </>
-        ) : null}
-      </p>
+      <section className="network-section">
+        <header>
+          <span aria-hidden="true"><Network size={16} /></span>
+          <div><h3>{t("External access")}</h3><p>{t("Opcionalmente, faça os nós responderem por IPs específicos da sua rede.")}</p></div>
+        </header>
+        <div className="network-section-body">
+          <div className="network-external-field">
+            <Field
+              id="net-extips"
+              label={t("External IPs")}
+              hint={t("Informe um endereço por linha. Deixe vazio para desativar.")}
+              value={externalIPs}
+              onChange={setExternalIPs}
+              placeholder={suggestedIPs.length ? suggestedIPs.join("\n") : "192.168.0.42"}
+              multiline
+            />
+          </div>
+          {suggestedIPs.length ? (
+            <div className="network-suggestions">
+              <span>{t("Detected in this cluster")}</span>
+              <div>
+                {suggestedIPs.map((ip) => (
+                  <button
+                    key={ip}
+                    type="button"
+                    className="ip-suggestion"
+                    onClick={() => setExternalIPs((curr) => (curr.includes(ip) ? curr : (curr ? curr + "\n" : "") + ip))}
+                  >
+                    <span aria-hidden="true">+</span>{ip}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="network-note"><Info size={15} /><span>{t("O kube-proxy encaminha a Service port para todas as réplicas que correspondem ao selector do serviço.")}</span></div>
+        </div>
+      </section>
 
-      {info ? <p className="text-[var(--mut)]" style={{ fontSize: 12 }}>{info}</p> : null}
+      {info ? <div className="network-result" role="status"><CheckCircle2 size={17} /><span><strong>{t("Networking updated")}</strong>{info}</span></div> : null}
 
       <div className="dialog-actions justify-between">
         <AppButton variant="ghost" onClick={closeModal}>{t("Cancel")}</AppButton>
         <AppButton onClick={save} disabled={busy}>{busy ? t("Saving…") : t("Apply networking changes")}</AppButton>
       </div>
-    </>
+    </div>
   );
 }

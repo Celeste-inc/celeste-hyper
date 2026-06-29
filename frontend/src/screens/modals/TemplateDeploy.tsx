@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Activity, Box, Check, CheckCircle2, Circle, Layers3, Network, XCircle } from "lucide-react";
 import { http } from "../../shared/api/client";
 import type { Cluster, RegistrySourceSummary, Template } from "../../shared/types/api";
 import { AppButton } from "../../components/atoms/AppButton";
@@ -12,6 +13,26 @@ import { apiError } from "../../shared/utils/format";
 interface DeployStreamFrame {
   status: string;
   message: string | null;
+}
+
+const deployStatusLabels: Record<string, string> = {
+  pending: "Preparing deployment",
+  downloading: "Pulling image",
+  loading: "Loading image",
+  applying: "Applying Kubernetes resources",
+  done: "Service is ready",
+  failed: "Deployment failed",
+  cancelled: "Deployment cancelled",
+};
+
+function compactDeployFrames(frames: DeployStreamFrame[]): DeployStreamFrame[] {
+  const order: string[] = [];
+  const latest = new Map<string, DeployStreamFrame>();
+  for (const frame of frames) {
+    if (!latest.has(frame.status)) order.push(frame.status);
+    latest.set(frame.status, frame);
+  }
+  return order.map((status) => latest.get(status)!);
 }
 
 interface Props extends ModalActions {
@@ -145,25 +166,61 @@ export function TemplateDeploy({ templateId, image, clusters, notify, closeModal
   }
 
   if (deployedId !== null) {
+    const progress = compactDeployFrames(streamLines);
+    const status = progress[progress.length - 1]?.status ?? "pending";
+    const done = status === "done";
+    const failed = status === "failed" || status === "cancelled";
+    const uniqueKinds = [...new Set(appliedKinds)];
+    const clusterName = clusters.find((cluster) => cluster.id === clusterId)?.name ?? clusterId;
+    const StatusIcon = done ? CheckCircle2 : failed ? XCircle : Activity;
     return (
-      <>
-        <h2 className="dialog-title">{t("Deploying")}: <code>{name}</code></h2>
-        <p className="dialog-description">
-          {appliedKinds.map((k) => <Tag key={k}>{k}</Tag>)}
-        </p>
-        {lbMessage ? (
-          <p className="text-[var(--mut)]" style={{ fontSize: 12 }}>{lbMessage}</p>
+      <div className="template-deploy-result">
+        <section className={`deploy-result-hero ${done ? "done" : failed ? "failed" : "running"}`} role="status" aria-live="polite">
+          <span className="deploy-result-icon" aria-hidden="true"><StatusIcon size={25} /></span>
+          <div>
+            <span className="deploy-result-eyebrow">{done ? t("Deployment complete") : failed ? t("Action required") : t("Deployment in progress")}</span>
+            <h2 className="dialog-title">{done ? t("Service deployed") : failed ? t("Deployment failed") : t("Deploying service")}</h2>
+            <p><code>{name}</code> {done ? t("is running and managed by Celeste Hyper.") : failed ? t("could not be fully deployed.") : t("is being prepared in your cluster.")}</p>
+          </div>
+        </section>
+
+        <dl className="deploy-result-facts">
+          <div><dt>{t("Deployment")}</dt><dd>#{deployedId}</dd></div>
+          <div><dt>{t("Cluster")}</dt><dd>{clusterName}</dd></div>
+          <div><dt>{t("Namespace")}</dt><dd>{namespace}</dd></div>
+          <div><dt>{t("Replicas")}</dt><dd>{replicas}</dd></div>
+        </dl>
+
+        {uniqueKinds.length ? (
+          <section className="deploy-result-section">
+            <header><span aria-hidden="true"><Layers3 size={16} /></span><div><h3>{t("Resources created")}</h3><p>{t("Kubernetes objects applied for this service.")}</p></div></header>
+            <ul className="deploy-resource-list">
+              {uniqueKinds.map((kind) => <li key={kind}><Box size={15} /><span>{kind}</span><Check size={14} /></li>)}
+            </ul>
+          </section>
         ) : null}
-        <h4 className="detail-subtitle">{t("Live deploy")}</h4>
-        <ul className="detail-list" aria-label={t("Deploy stream")}>
-          {streamLines.length === 0 ? (
-            <li><span className="text-[var(--mut)]">{t("Waiting for status…")}</span></li>
-          ) : streamLines.map((line, i) => (
-            <li key={i}><Tag>{line.status}</Tag>{line.message ? <span>{line.message}</span> : null}</li>
-          ))}
-        </ul>
+
+        {lbMessage ? <div className="deploy-result-note"><Network size={16} /><span>{lbMessage}</span></div> : null}
+
+        <section className="deploy-result-section">
+          <header><span aria-hidden="true"><Activity size={16} /></span><div><h3>{t("Deployment progress")}</h3><p>{t("Latest state for each stage.")}</p></div></header>
+          <ol className="deploy-timeline" aria-label={t("Deploy stream")}>
+            {progress.length === 0 ? (
+              <li className="running"><span className="deploy-step-marker"><Circle size={10} /></span><div><strong>{t("Waiting for status…")}</strong></div></li>
+            ) : progress.map((line) => {
+              const stepDone = line.status === "done";
+              const stepFailed = line.status === "failed" || line.status === "cancelled";
+              return (
+                <li className={stepDone ? "done" : stepFailed ? "failed" : "complete"} key={line.status}>
+                  <span className="deploy-step-marker">{stepFailed ? <XCircle size={15} /> : <Check size={14} />}</span>
+                  <div><strong>{t(deployStatusLabels[line.status] ?? line.status)}</strong>{line.message ? <span>{line.message}</span> : null}</div>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
         <div className="dialog-actions"><AppButton onClick={closeModal}>{t("Close")}</AppButton></div>
-      </>
+      </div>
     );
   }
 
