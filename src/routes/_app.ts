@@ -12,6 +12,7 @@ import { registryRoutes } from "./registries.ts";
 import { fleetRoutes } from "./fleet.ts";
 import { templateRoutes } from "./templates.ts";
 import { registrySourceRoutes } from "./registry-sources.ts";
+import { scalingRoutes } from "./scaling.ts";
 import { discoveryRoutes } from "./discovery.ts";
 import { helmRoutes } from "./helm.ts";
 import { auditRoutes } from "./audit.ts";
@@ -75,6 +76,7 @@ export function buildApp(deps: ApiDeps) {
     .use(fleetRoutes(deps))
     .use(templateRoutes(deps))
     .use(registrySourceRoutes(deps))
+    .use(scalingRoutes(deps))
     .use(discoveryRoutes(deps))
     .use(helmRoutes(deps))
     .use(auditRoutes(deps))
