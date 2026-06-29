@@ -777,7 +777,7 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
     )
     .delete(
       "/services/:name/pods/:pod",
-      async ({ params, status }) => {
+      async ({ params, query, status }) => {
         if (!isValidK8sName(params.pod)) return status(400, { error: "invalid pod name" });
         const svc = deps.registry.get(params.name);
         if (!svc) return status(404, { error: "service not found" });
@@ -794,13 +794,29 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
           }
         }
         if (!owned) return status(403, { error: "pod does not belong to this service" });
-        const r = await k8s.kubectl([
-          "-n", svc.namespace, "delete", "pod", "--grace-period=30", "--ignore-not-found", "--", params.pod,
-        ]);
+
+        // Production default: --grace-period=0 (immediate apiserver removal; kubelet still honours
+        // spec.terminationGracePeriodSeconds for SIGTERM → SIGKILL). The previous 30s default left the
+        // pod stuck in "Terminating" for the entire window — operators read that as "not deleting".
+        // Force=true adds --force, which removes the pod from etcd even if the kubelet is unreachable
+        // (use only when a pod is stuck — destructive).
+        const force = query.force === "true" || query.force === "1";
+        const args = [
+          "-n", svc.namespace, "delete", "pod",
+          "--grace-period=0", "--ignore-not-found", "--wait=false",
+          ...(force ? ["--force"] : []),
+          "--", params.pod,
+        ];
+        const r = await k8s.kubectl(args);
         if (r.code !== 0) return status(502, { error: (r.stderr || r.stdout).trim().slice(0, 200) });
-        // The Deployment controller recreates the pod automatically (selector unchanged) — kube-proxy
-        // routes traffic to the new pod once it's Ready, so autoscaling / native LB are preserved.
-        return { ok: true, pod: params.pod, message: "Pod deleted; the controller will recreate it." };
+        return {
+          ok: true,
+          pod: params.pod,
+          forced: force,
+          message: force
+            ? "Pod force-removed from etcd (kubelet had not acked the deletion)."
+            : "Pod deletion requested; kube-apiserver will reap it as soon as the kubelet acks termination, and the controller creates a replacement.",
+        };
       },
       { detail: { summary: "Delete a single pod backing this service (controller recreates it)", tags: ["service-ops"] } },
     )

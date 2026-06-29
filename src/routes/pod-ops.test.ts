@@ -28,7 +28,28 @@ describe("DELETE /api/services/:name/pods/:pod", () => {
     const del = calls.find((a) => a.includes("delete") && a.includes("pod"));
     expect(del).toBeDefined();
     expect(del).toContain("api-abc");
-    expect(del).toContain("--grace-period=30"); // graceful by default
+    expect(del).toContain("--grace-period=0"); // snappy apiserver removal; kubelet honours pod's terminationGracePeriodSeconds
+    expect(del).toContain("--wait=false");
+    expect(del).not.toContain("--force"); // only when ?force=true
+  });
+
+  it("?force=true adds --force for evicting a pod stuck in Terminating", async () => {
+    const calls: string[][] = [];
+    const deps = setup({
+      k8s: {
+        getWorkloadSelector: async () => "app=api",
+        listPods: async () => [{ name: "api-abc", containers: [{ name: "api" }] }],
+        kubectl: async (args: string[]) => {
+          calls.push(args);
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      } as never,
+    });
+    const r = await call(buildApp(deps), "DELETE", "/api/services/api/pods/api-abc?force=true");
+    expect(r.status).toBe(200);
+    expect(r.body.forced).toBe(true);
+    const del = calls.find((a) => a.includes("delete") && a.includes("pod"));
+    expect(del).toContain("--force");
   });
 
   it("403 when the pod doesn't back this service (anti-cross-tenant)", async () => {
