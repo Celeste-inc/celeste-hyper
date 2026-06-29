@@ -774,5 +774,61 @@ export const serviceOpsRoutes = (deps: ApiDeps) => {
         };
       },
       { detail: { summary: "Patch the Service port + Deployment containerPort in-place (no recreation, no data loss)", tags: ["service-ops"] } },
+    )
+    .delete(
+      "/services/:name/pods/:pod",
+      async ({ params, status }) => {
+        if (!isValidK8sName(params.pod)) return status(400, { error: "invalid pod name" });
+        const svc = deps.registry.get(params.name);
+        if (!svc) return status(404, { error: "service not found" });
+        // RCE-equivalent guard: only delete pods that back this service's workload(s).
+        const k8s = deps.pool.get(svc.clusterId);
+        if (!k8s) return status(500, { error: `cluster '${svc.clusterId}' not configured` });
+        const targets = await findWorkloadTargets(svc);
+        let owned = false;
+        for (const t of targets) {
+          const pods = (await k8s.listPods(t.namespace, t.selector).catch(() => [])) as Array<{ name?: string }>;
+          if (pods.some((p) => p.name === params.pod)) {
+            owned = true;
+            break;
+          }
+        }
+        if (!owned) return status(403, { error: "pod does not belong to this service" });
+        const r = await k8s.kubectl([
+          "-n", svc.namespace, "delete", "pod", "--grace-period=30", "--ignore-not-found", "--", params.pod,
+        ]);
+        if (r.code !== 0) return status(502, { error: (r.stderr || r.stdout).trim().slice(0, 200) });
+        // The Deployment controller recreates the pod automatically (selector unchanged) — kube-proxy
+        // routes traffic to the new pod once it's Ready, so autoscaling / native LB are preserved.
+        return { ok: true, pod: params.pod, message: "Pod deleted; the controller will recreate it." };
+      },
+      { detail: { summary: "Delete a single pod backing this service (controller recreates it)", tags: ["service-ops"] } },
+    )
+    .post(
+      "/services/:name/redeploy",
+      async ({ params, status }) => {
+        const svc = deps.registry.get(params.name);
+        if (!svc) return status(404, { error: "service not found" });
+        const k8s = deps.pool.get(svc.clusterId);
+        if (!k8s) return status(500, { error: `cluster '${svc.clusterId}' not configured` });
+        const kind = workloadKindFor(svc).toLowerCase();
+        const name = workloadNameFor(svc);
+        // `kubectl rollout restart` patches the pod template with a kubectl.kubernetes.io/restartedAt
+        // annotation — the Deployment controller rolls pods one-by-one with the current image and
+        // current config (Secret/ConfigMap), so .env edits/networking patches take effect without
+        // needing the operator to bump the tag.
+        const r = await k8s.kubectl(["-n", svc.namespace, "rollout", "restart", `${kind}/${name}`]);
+        if (r.code !== 0) return status(502, { error: (r.stderr || r.stdout).trim().slice(0, 200) });
+        const currentTag = deps.state.getCurrent(svc.name)?.tag ?? "redeployed";
+        const deploymentId = deps.state.recordDeploymentStart(svc.name, currentTag);
+        deps.state.updateDeployment(deploymentId, "applying", "rollout restart");
+        // Spawn a watcher so the deploy stream's "applying → done" arc still fires for the UI banner.
+        void k8s
+          .kubectl(["-n", svc.namespace, "rollout", "status", `${kind}/${name}`, "--timeout=300s"])
+          .then((s) => deps.state.updateDeployment(deploymentId, s.code === 0 ? "done" : "failed", (s.stderr || s.stdout).trim().slice(0, 200) || "rollout finished"))
+          .catch((e: Error) => deps.state.updateDeployment(deploymentId, "failed", e.message));
+        return { ok: true, deploymentId, currentTag };
+      },
+      { detail: { summary: "Rollout restart of the workload at its current image (apply env/config changes)", tags: ["service-ops"] } },
     );
 };
