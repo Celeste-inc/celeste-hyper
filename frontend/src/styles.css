@@ -3241,6 +3241,14 @@ tr:hover td {
     display: none;
   }
 
+  .app-nav {
+    gap: 10px;
+  }
+
+  .status-row {
+    gap: 7px;
+  }
+
   .app-nav,
   .app-main {
     width: calc(100% - 32px);
@@ -3253,13 +3261,14 @@ tr:hover td {
   }
 
   .page-actions {
+    display: grid;
     width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .page-actions .hyper-button {
-    width: auto;
+    width: 100%;
     min-width: 0;
-    flex: 1 1 0;
     white-space: nowrap;
   }
 
@@ -3274,14 +3283,16 @@ tr:hover td {
   }
 
   .resource-actions {
+    display: flex;
     width: 100%;
+    flex-wrap: wrap;
     padding-left: 47px;
   }
 
   .resource-actions .hyper-button {
     width: auto;
     min-width: 0;
-    flex: 1 1 0;
+    flex: 1 1 132px;
   }
 
   .resource-facts {
@@ -3314,6 +3325,16 @@ tr:hover td {
 @media (max-width: 560px) {
   .app-nav {
     min-height: 54px;
+    gap: 8px;
+  }
+
+  .status-row {
+    gap: 6px;
+  }
+
+  .theme-toggle {
+    width: 34px;
+    height: 34px;
   }
 
   .scan-status {
@@ -3383,6 +3404,16 @@ tr:hover td {
     width: 100%;
   }
 
+  .summary-detail {
+    align-items: flex-start;
+    white-space: normal;
+  }
+
+  .summary-detail svg {
+    margin-top: 1px;
+    flex: 0 0 auto;
+  }
+
   .view-tabs {
     overflow: visible;
   }
@@ -3438,7 +3469,7 @@ tr:hover td {
   }
 
   .resource-actions {
-    padding-left: 45px;
+    padding-left: 0;
   }
 
   .resource-facts {
@@ -3475,10 +3506,45 @@ tr:hover td {
   }
 
   .modal-card {
-    max-height: 92vh;
-    padding: 24px 16px 30px;
+    max-height: calc(100dvh - max(12px, env(safe-area-inset-top)));
     border-bottom: 0;
     border-radius: 18px 18px 0 0;
+  }
+
+  .modal-content {
+    padding: 24px 16px 30px;
+  }
+
+  .modal-close {
+    top: 14px;
+    right: 14px;
+    width: 36px;
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  .dialog-actions {
+    bottom: -30px;
+    margin: 24px -16px -30px;
+    padding: 12px 16px max(14px, env(safe-area-inset-bottom));
+  }
+
+  .dialog-actions .hyper-button {
+    min-height: 40px;
+  }
+
+  .template-grid,
+  .template-deploy-grid,
+  .template-deploy-grid.hpa-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .template-search {
+    padding: 14px;
+  }
+
+  .template-card {
+    min-height: 0;
   }
 
   .detail-sheet {
@@ -3608,7 +3674,7 @@ tr:hover td {
   }
 
   .modal-card:has(.env-editor) {
-    padding: 0;
+    border-radius: 18px 18px 0 0;
   }
 
   .env-editor-header {
@@ -3707,6 +3773,54 @@ tr:hover td {
   .env-editor-actions .hyper-button {
     width: 100%;
     min-width: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .brand-row h1 {
+    display: none;
+  }
+
+  .page-actions {
+    gap: 7px;
+  }
+
+  .page-actions .hyper-button {
+    min-height: 40px;
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .resource-main {
+    gap: 10px;
+  }
+
+  .resource-actions .hyper-button {
+    min-height: 40px;
+  }
+
+  .template-search-row {
+    grid-template-columns: 1fr;
+  }
+
+  .template-search-row .hyper-button {
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+  }
+
+  .dialog-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dialog-actions > .hyper-button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .dialog-actions > .hyper-button:only-child {
+    grid-column: 2;
   }
 }
 

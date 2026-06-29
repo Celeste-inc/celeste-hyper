@@ -19,6 +19,7 @@ import {
   Network,
   Pause,
   Play,
+  RefreshCw,
   Rocket,
   Search,
   Settings,
@@ -75,18 +76,37 @@ export function ServiceDetail({ name, services, clusterLabel, notify, onClose, s
   }, [isObscured, onClose]);
 
   useEffect(() => {
-    void Promise.all([http.service(name), http.deployments(name), http.pods(name), http.events(name), http.networking(name), http.rollbackPreview(name)]).then(
-      ([serviceRes, depRes, podRes, evRes, netRes, rbRes]) => {
-        setService(serviceRes.body.service || null);
-        setDeployments((depRes.body.items || []).slice(0, 8));
-        setPods(podRes.body.items || []);
-        setPodGroups(podRes.body.groups || []);
-        setEvents(evRes.body.items || []);
-        setSelector(podRes.body.selector);
-        setNetworking(netRes.body.service || null);
-        setCanRollback(Boolean(rbRes.body.eligible));
-      },
-    );
+    let alive = true;
+    const fullLoad = async () => {
+      const [serviceRes, depRes, podRes, evRes, netRes, rbRes] = await Promise.all([
+        http.service(name), http.deployments(name), http.pods(name), http.events(name), http.networking(name), http.rollbackPreview(name),
+      ]);
+      if (!alive) return;
+      setService(serviceRes.body.service || null);
+      setDeployments((depRes.body.items || []).slice(0, 8));
+      setPods(podRes.body.items || []);
+      setPodGroups(podRes.body.groups || []);
+      setEvents(evRes.body.items || []);
+      setSelector(podRes.body.selector);
+      setNetworking(netRes.body.service || null);
+      setCanRollback(Boolean(rbRes.body.eligible));
+    };
+    void fullLoad();
+    // Live tracker for pod / deployment churn (autoscale, redeploy, manual delete). Cheaper than the
+    // full load — only the volatile slices refresh every 2 s, the rest re-resolves on actions.
+    const podsPoll = window.setInterval(async () => {
+      if (!alive) return;
+      const [podRes, depRes] = await Promise.all([http.pods(name), http.deployments(name)]);
+      if (!alive) return;
+      setPods(podRes.body.items || []);
+      setPodGroups(podRes.body.groups || []);
+      setSelector(podRes.body.selector);
+      setDeployments((depRes.body.items || []).slice(0, 8));
+    }, 2000);
+    return () => {
+      alive = false;
+      window.clearInterval(podsPoll);
+    };
   }, [name]);
 
   const openModal = (modal: ModalState) => setModal(modal);
@@ -153,6 +173,7 @@ function ServiceDetailContent({ service, card, deployments, pods, podGroups, eve
         </div>
         <div className="detail-toolbar">
           <AppButton onClick={() => openModal({ type: "deploy", name })}><Rocket size={15} />{t("Deploy")}</AppButton>
+          <AppButton variant="ghost" onClick={() => void redeployNow(name, notify)}><RefreshCw size={15} />{t("Redeploy")}</AppButton>
           {canRollback ? <AppButton variant="ghost" onClick={() => openModal({ type: "rollback", name })}><Undo2 size={15} />{t("Rollback")}</AppButton> : null}
           <AppButton variant="ghost" onClick={() => openModal({ type: "service-settings", name })}><Settings size={15} />{t("Settings")}</AppButton>
           <AppButton variant="ghost" onClick={() => openModal({ type: "history", name })}><History size={15} />{t("History")}</AppButton>
@@ -208,7 +229,7 @@ function ServiceDetailContent({ service, card, deployments, pods, podGroups, eve
             </div>
           ) : null}
           <DetailSection icon={<Box size={16} />} title={t("Pods")} meta={`${pods.length} ${t("total")}`}>
-            {pods.length ? <PodsTable name={name} pods={pods} groups={podGroups} openModal={openModal} /> : <p className="detail-empty">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}
+            {pods.length ? <PodsTable name={name} pods={pods} groups={podGroups} openModal={openModal} notify={notify} /> : <p className="detail-empty">{t("No pods matched the workload selector")} ({selector || "-"}).</p>}
           </DetailSection>
           <DetailSection icon={<ListTree size={16} />} title={t("Events")} meta={warningEvents.length ? `${warningEvents.length} ${t("warnings")}` : undefined}>
             {events.length ? <EventsTable items={events} /> : <p className="detail-empty">{t("No recent events for pods backing this service.")}</p>}
@@ -647,6 +668,15 @@ function EndpointPanel({ service, notify, clusterId, openModal }: { service: Net
   );
 }
 
+async function redeployNow(name: string, notify: Notify) {
+  const res = await http.redeploy(name);
+  if (res.status >= 400) {
+    notify(apiError(res.body, res.status), "bad");
+    return;
+  }
+  notify(`${t("Redeploying")} ${name} @ ${res.body.currentTag}`);
+}
+
 async function copyText(value: string) {
   if (navigator.clipboard && window.isSecureContext) {
     await navigator.clipboard.writeText(value);
@@ -843,10 +873,19 @@ function podStatusPill(pod: PodSummary): { tone: "ok" | "warn" | "bad"; label: s
   return { tone: ok ? "ok" : "warn", label: pod.phase };
 }
 
-function PodRow({ name, pod, openModal }: { name: string; pod: PodSummary; openModal: (modal: ModalState) => void }) {
+function PodRow({ name, pod, openModal, notify }: { name: string; pod: PodSummary; openModal: (modal: ModalState) => void; notify: Notify }) {
   const restarts = pod.containers.reduce((sum, item) => sum + (item.restartCount || 0), 0);
   const status = podStatusPill(pod);
   const container = pod.containers[0]?.name;
+  const remove = async () => {
+    if (!window.confirm(`Delete pod ${pod.name}? The Deployment controller will create a replacement.`)) return;
+    const res = await http.deletePod(name, pod.name);
+    if (res.status >= 400) {
+      notify(apiError(res.body, res.status), "bad");
+      return;
+    }
+    notify(t("Pod scheduled for deletion"));
+  };
   return (
     <article className={`pod-row ${status.tone}`} key={pod.name}>
       <span className="pod-status-dot" aria-hidden="true" />
@@ -856,16 +895,17 @@ function PodRow({ name, pod, openModal }: { name: string; pod: PodSummary; openM
       <div className="pod-fact"><span>{t("Node")}</span><strong>{pod.nodeName || "—"}</strong></div>
       <div className={`pod-fact pod-restarts ${restarts ? "bad" : ""}`}><span>{t("Restarts")}</span><strong>{restarts}</strong></div>
       {container ? <button className="icon-button" type="button" aria-label={`Open terminal for ${pod.name}`} onClick={() => openModal({ type: "terminal", name, pod: pod.name, container })}><SquareTerminal size={16} /></button> : null}
+      <button className="icon-button" type="button" aria-label={`Delete pod ${pod.name}`} title={t("Delete pod")} onClick={() => void remove()}><Trash2 size={16} /></button>
     </article>
   );
 }
 
-function PodsTable({ name, pods, groups, openModal }: { name: string; pods: PodSummary[]; groups: PodGroup[]; openModal: (modal: ModalState) => void }) {
+function PodsTable({ name, pods, groups, openModal, notify }: { name: string; pods: PodSummary[]; groups: PodGroup[]; openModal: (modal: ModalState) => void; notify: Notify }) {
   // No groups (old API), or only the primary → render flat. Two or more groups → render with a
   // subheader per workload so the operator sees which Deployment each pod belongs to.
   const grouped = groups.filter((g) => g.pods.length > 0);
   if (grouped.length <= 1) {
-    return <div className="pod-list">{pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} />)}</div>;
+    return <div className="pod-list">{pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} notify={notify} />)}</div>;
   }
   return (
     <div className="pod-list">
@@ -877,7 +917,7 @@ function PodsTable({ name, pods, groups, openModal }: { name: string; pods: PodS
             <Tag>{group.kind}</Tag>
             <small>{group.pods.length} {group.pods.length === 1 ? t("pod") : t("pods")}</small>
           </header>
-          {group.pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} />)}
+          {group.pods.map((pod) => <PodRow key={pod.name} name={name} pod={pod} openModal={openModal} notify={notify} />)}
         </div>
       ))}
     </div>

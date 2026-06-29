@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Search } from "lucide-react";
+import { ArrowRight, Rocket, Search } from "lucide-react";
 import { http } from "../../shared/api/client";
 import type { DockerHubImage, Template } from "../../shared/types/api";
 import { AppButton } from "../../components/atoms/AppButton";
@@ -55,6 +55,7 @@ export function Templates({ setModal, closeModal }: ModalActions) {
               id="dh-q"
               className="hyper-input"
               type="search"
+              aria-label={t("Image name")}
               value={query}
               placeholder="nginx, postgres, redis, …"
               autoComplete="off"
@@ -87,6 +88,11 @@ export function Templates({ setModal, closeModal }: ModalActions) {
                   </div>
                   <p>{img.description || "—"}</p>
                   <div className="template-card-meta"><Tag>★ {img.stars}</Tag></div>
+                  <div className="template-card-actions">
+                    <AppButton onClick={() => setModal({ type: "template-deploy", templateId: "custom", image: img.name })}>
+                      <Rocket size={15} />{t("Deploy")}
+                    </AppButton>
+                  </div>
                 </li>
               ))}
             </ul>

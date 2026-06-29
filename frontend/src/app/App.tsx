@@ -205,7 +205,7 @@ function renderModal(modal: ModalState, actions: ModalActions, clusters: Cluster
   if (modal.type === "service-settings") return <Settings name={modal.name} {...actions} />;
   if (modal.type === "service-delete") return <DeleteService name={modal.name} {...actions} />;
   if (modal.type === "templates") return <Templates {...actions} />;
-  if (modal.type === "template-deploy") return <TemplateDeploy templateId={modal.templateId} clusters={clusters} {...actions} />;
+  if (modal.type === "template-deploy") return <TemplateDeploy templateId={modal.templateId} image={modal.image} clusters={clusters} {...actions} />;
   if (modal.type === "registries") return <Registries {...actions} />;
   if (modal.type === "networking-edit") return <NetworkingEdit name={modal.name} {...actions} />;
   if (modal.type === "deploy") return <Deploy name={modal.name} {...actions} />;

@@ -105,6 +105,17 @@ export const http = {
   execToken: (name: string, pod: string, container: string) =>
     json<{ token: string; expiresAt: string }>("/services/" + encodeURIComponent(name) + "/exec/token", "POST", { pod, container }),
   pods: (name: string) => api<{ items: PodSummary[]; groups?: PodGroup[]; selector?: string; error?: string }>(`/services/${encodeURIComponent(name)}/pods`),
+  deletePod: (name: string, pod: string) =>
+    api<{ ok: true; pod: string; message: string }>(
+      `/services/${encodeURIComponent(name)}/pods/${encodeURIComponent(pod)}`,
+      { method: "DELETE" },
+    ),
+  redeploy: (name: string) =>
+    json<{ ok: true; deploymentId: number; currentTag: string }>(
+      `/services/${encodeURIComponent(name)}/redeploy`,
+      "POST",
+      {},
+    ),
   events: (name: string) => api<{ items: K8sEvent[]; error?: string }>(`/services/${encodeURIComponent(name)}/events`),
   networking: (name: string) => api<{ service: NetworkingService | null; hint?: string }>(`/services/${encodeURIComponent(name)}/networking`),
   ingressYaml: (clusterId: string, namespace: string, name: string) =>
@@ -176,6 +187,8 @@ export const http = {
     serviceType?: "ClusterIP" | "NodePort" | "LoadBalancer";
     autoscale?: { minReplicas: number; maxReplicas: number; targetCPUUtilizationPercentage: number };
     registrySourceId?: string;
+    customImage?: string;
+    customPort?: number;
   }) => json<TemplateDeployResponse>("/templates/deploy", "POST", body),
   r2Sources: () => api<{ items: R2Source[] }>("/settings/r2/sources"),
   saveR2Source: (body: { id: string; name: string; endpoint: string; bucket: string; region: string; accessKeyId: string; secretAccessKey?: string }) =>

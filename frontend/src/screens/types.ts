@@ -24,7 +24,7 @@ export type ModalState =
   | { type: "discovery" }
   | { type: "audit" }
   | { type: "templates" }
-  | { type: "template-deploy"; templateId: string }
+  | { type: "template-deploy"; templateId: string; image?: string }
   | { type: "registries" };
 
 export interface ModalActions {
