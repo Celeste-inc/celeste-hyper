@@ -1,3 +1,34 @@
+import { VERSION } from "./version.ts";
+import { BINARY_SCHEMA_VERSION } from "./lib/migrations/index.ts";
+
+// Argv pre-flight: handle --version / --help BEFORE any side effects (config load, DB open, lock).
+// This is what update.sh invokes to verify a freshly built binary can boot at all without
+// touching the running install's data.
+const argv = Bun.argv.slice(2);
+if (argv.includes("--version") || argv.includes("-v")) {
+  // Single line so update.sh can grep it deterministically.
+  process.stdout.write(`celeste-hyper v${VERSION} (schema ${BINARY_SCHEMA_VERSION})\n`);
+  process.exit(0);
+}
+if (argv.includes("--help") || argv.includes("-h")) {
+  process.stdout.write(
+    [
+      "celeste-hyper — control plane for k3s / k8s",
+      "",
+      "Usage:",
+      "  celeste-hyper             start the HTTP server",
+      "  celeste-hyper --version   print version + schema and exit",
+      "  celeste-hyper --help      print this message",
+      "",
+      "Environment:",
+      "  HYPER_CONFIG   path to config.json (default ./config.json)",
+      "  LOG_LEVEL      info | debug | warn | error",
+      "",
+    ].join("\n"),
+  );
+  process.exit(0);
+}
+
 import { loadConfig } from "./config.ts";
 import { State } from "./lib/state.ts";
 import { R2 } from "./lib/r2.ts";
