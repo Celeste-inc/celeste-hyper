@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: __SERVICE_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app: __SERVICE_NAME__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: __SERVICE_NAME__
+  template:
+    metadata:
+      labels:
+        app: __SERVICE_NAME__
+    spec:
+      # r2-bundle images are imported only onto the node that ran `ctr import`
+      # (install.sh, or the deployer's own importer) — they were never pushed
+      # to a registry every node can pull from. Pin to that node until either
+      # every node imports the tag, or you migrate this service to
+      # sourceType: registry-pull.
+      # nodeName: <node-that-imported-the-image>
+      containers:
+        - name: __SERVICE_NAME__
+          image: docker.io/library/__SERVICE_NAME__:__IMAGE_TAG__
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

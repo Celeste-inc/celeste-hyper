@@ -13,6 +13,7 @@ A single binary, written with [Bun](https://bun.sh), with a built-in HTTP API an
 | Develop the Vite UI and package it into the binary | [Frontend workflow](./frontend.md) |
 | Add a real production cluster | [Clusters & kubeconfig](./clusters.md) |
 | Understand `r2-bundle` vs `registry-pull` | [Service sources](./sources.md) |
+| Set up a CI pipeline that ships builds to R2 for hyper to deploy | [Cloudflare R2 for deployments](./cloudflare-r2-deployments/README.md) |
 | Wire something against the HTTP API | [API reference](./api.md) |
 | Operate the host (migrations, backups, auth) | [Operations runbook](./operations.md) |
 
@@ -159,6 +160,7 @@ Each service belongs to exactly one cluster. A service named the same thing in t
 - **[Frontend workflow](./frontend.md)** — running backend and Vite separately in development, then embedding the UI into the production binary
 - **[Clusters & kubeconfig](./clusters.md)** — adding clusters, kubeconfig hygiene, on-prem vs cloud, health checks
 - **[Service sources](./sources.md)** — choosing between `r2-bundle` and `registry-pull`, bundle layout, image-tag listing
+- **[Cloudflare R2 for deployments](./cloudflare-r2-deployments/README.md)** — the producer side: a platform-agnostic GitHub Actions template that builds, bundles, and ships to R2 for an `r2-bundle` deployer to pick up
 - **[Local stack walkthrough](./local-stack.md)** — running the two-cluster demo via Docker Compose
 - **[API reference](./api.md)** — every REST endpoint, request and response schemas
 - **[Operations runbook](./operations.md)** — schema migrations, backups, first-run auth, the `bun run check` gate

@@ -1,0 +1,159 @@
+# =============================================================================
+# build-and-upload-to-r2 — build a container image, bundle it with its k8s
+# manifests, and ship the bundle to Cloudflare R2 for an r2-bundle deployer
+# (e.g. celeste-hyper) — or a human running ./install.sh — to pick up.
+#
+# Triggers:
+#   push to main      → build + upload, tagged with the short git SHA
+#   push of a v* tag  → build + upload, tagged with the git tag itself
+#   workflow_dispatch → manual run, optionally overriding the tag
+#
+# Requires (repo Settings → Secrets and variables → Actions):
+#   secrets.R2_ACCESS_KEY_ID
+#   secrets.R2_SECRET_ACCESS_KEY
+#   vars.R2_BUCKET        (or secrets.R2_BUCKET)
+#   vars.R2_ENDPOINT_URL  (or secrets.R2_ENDPOINT_URL)
+#
+# See ../../README.md for how to create the bucket, the scoped API token, and
+# these secrets. The R2 upload step is skipped (not failed) when
+# R2_ACCESS_KEY_ID is unset, so this workflow is safe to land before secrets
+# are configured — it will build and stop at the CI artifact upload.
+#
+# Before using this template:
+#   1. Set IMAGE_NAME below to your service name.
+#   2. Copy ../deploy/ to your repo root as deploy/, and replace the
+#      __SERVICE_NAME__ / __NAMESPACE__ placeholders in deploy/k8s/*.yaml.
+#   3. Make sure a Dockerfile exists at the path referenced below.
+# =============================================================================
+
+name: build-and-upload-to-r2
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Override image tag (defaults to git short SHA, or the pushed tag)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-upload-to-r2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must match __SERVICE_NAME__ in deploy/k8s/*.yaml.
+  IMAGE_NAME: your-service-name
+
+jobs:
+  build:
+    name: Build image and upload bundle
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_BUILD_SUMMARY: "false"
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve image tag
+        id: vars
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            TAG="${{ inputs.image_tag }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="$(echo "${GITHUB_SHA}" | cut -c1-12)"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "tar_name=${IMAGE_NAME}-${TAG}-amd64.tar" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: linux/amd64
+          cache-image: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build amd64 image and export tar
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+          outputs: type=docker,dest=./${{ steps.vars.outputs.tar_name }}
+          # App-specific build-time config goes here, e.g.:
+          # build-args: |
+          #   MY_BUILD_ARG=${{ secrets.MY_BUILD_ARG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Assemble deploy bundle
+        run: |
+          BUNDLE="bundle"
+          TAG="${{ steps.vars.outputs.tag }}"
+          mkdir -p "$BUNDLE/k8s"
+          mv "${{ steps.vars.outputs.tar_name }}" "$BUNDLE/"
+          cp deploy/install.sh deploy/README.md "$BUNDLE/"
+          chmod +x "$BUNDLE/install.sh"
+          for f in deploy/k8s/*.yaml; do
+            name=$(basename "$f")
+            cp "$f" "$BUNDLE/k8s/$name"
+            sed "s|__IMAGE_TAG__|${TAG}|g" "$f" > "$BUNDLE/k8s/${name%.yaml}.rendered.yaml"
+            # Skip the rendered copy when the manifest has no __IMAGE_TAG__
+            # placeholder — it would just be a byte-for-byte duplicate.
+            if cmp -s "$BUNDLE/k8s/$name" "$BUNDLE/k8s/${name%.yaml}.rendered.yaml"; then
+              rm "$BUNDLE/k8s/${name%.yaml}.rendered.yaml"
+            fi
+          done
+          ls -lhR "$BUNDLE"
+          ( cd "$BUNDLE" && sha256sum "${{ steps.vars.outputs.tar_name }}" )
+
+      - name: Upload bundle artifact (CI history / debugging)
+        if: ${{ env.ACT != 'true' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.IMAGE_NAME }}-amd64-${{ steps.vars.outputs.tag }}
+          path: bundle/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Detect R2 config
+        id: r2cfg
+        env:
+          R2_KEY: ${{ secrets.R2_ACCESS_KEY_ID }}
+        run: |
+          if [ -n "${R2_KEY:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload bundle to Cloudflare R2
+        if: ${{ env.ACT != 'true' && steps.r2cfg.outputs.enabled == 'true' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
+          R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL || secrets.R2_ENDPOINT_URL }}
+        run: |
+          : "${R2_BUCKET:?R2_BUCKET not set (as repo variable or secret)}"
+          : "${R2_ENDPOINT_URL:?R2_ENDPOINT_URL not set (as repo variable or secret)}"
+          DEST="s3://${R2_BUCKET}/${{ env.IMAGE_NAME }}/${{ steps.vars.outputs.tag }}/"
+          aws s3 sync bundle/ "$DEST" \
+            --endpoint-url "${R2_ENDPOINT_URL}" \
+            --no-progress \
+            --only-show-errors
+          echo "bundle uploaded to $DEST"

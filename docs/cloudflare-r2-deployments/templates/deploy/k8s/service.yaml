@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: __SERVICE_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app: __SERVICE_NAME__
+spec:
+  # Swap for NodePort (and add a nodePort) if something on the node itself
+  # (e.g. an external NGINX/HAProxy load balancer) needs a fixed port to
+  # target instead of going through an in-cluster Ingress.
+  type: ClusterIP
+  selector:
+    app: __SERVICE_NAME__
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
