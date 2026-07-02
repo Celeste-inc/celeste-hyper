@@ -1,7 +1,7 @@
 {
   "name": "celeste-hyper",
   "description": "Self-hosted control plane for k3s/k8s services distributed via Cloudflare R2",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
