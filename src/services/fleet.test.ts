@@ -2,6 +2,10 @@ import { describe, it, expect } from "bun:test";
 import { aggregateFleet, type FleetInputs } from "./fleet.ts";
 import type { DeploymentRow } from "../lib/state.ts";
 
+// Fixed "now", independent of wall-clock time, so failedDeploys24h doesn't
+// flip based on when the test happens to run relative to the fixture dates.
+const NOW = Date.parse("2026-06-29T10:05:00Z");
+
 const baseInputs: FleetInputs = {
   clusters: [
     { id: "prod-eu", name: "Prod EU", defaultNamespace: "default", runtime: "auto", enabled: true } as never,
@@ -30,6 +34,7 @@ const baseInputs: FleetInputs = {
     ["prod-eu", 2],
     ["prod-us", 5],
   ]),
+  now: NOW,
 };
 
 describe("aggregateFleet", () => {
@@ -76,7 +81,7 @@ describe("aggregateFleet", () => {
   });
 
   it("handles an empty fleet without throwing", async () => {
-    const fleet = aggregateFleet({ clusters: [], health: [], services: [], degraded: new Map(), recentDeployments: [], capabilities: new Map(), unmanagedByCluster: new Map() });
+    const fleet = aggregateFleet({ clusters: [], health: [], services: [], degraded: new Map(), recentDeployments: [], capabilities: new Map(), unmanagedByCluster: new Map(), now: NOW });
     expect(fleet.clusters).toEqual([]);
     expect(fleet.summary).toMatchObject({ clusters: 0, services: 0, degradedServices: 0 });
   });

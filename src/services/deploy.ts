@@ -6,13 +6,18 @@ import type { Config } from "../config.ts";
 import type { State } from "../lib/state.ts";
 import type { ServiceModel, R2BundleService, RegistryPullService, GitSyncService, DeployMode } from "./model.ts";
 import type { R2SourceStore } from "./r2-settings.ts";
-import { containerNameFor, workloadNameFor } from "./model.ts";
+import { containerNameFor, workloadNameFor, clusterImageLoad } from "./model.ts";
+import { runRemoteBundleImport } from "./bundle-import.ts";
 import { Git, type GitLike, validateGitUrl, validateGitPath, validateDeployKeyPath } from "../lib/git.ts";
 import { buildCanaryManifest, buildColorManifest } from "./deploy-manifest.ts";
 import { runHealthGate, type HealthGateSample } from "./health-gate.ts";
 import type { ClusterPod } from "../lib/k8s.ts";
 
 const BLUE_GREEN_DRAIN_SEC = 30;
+// Presigned tar URL lifetime. Kept tight (just over the import Job's deadline) because the URL is
+// projected into the Job's pod env — visible via `kubectl get -o yaml` and possibly an apiserver
+// audit log — so a short TTL means an audit-logged URL is a dead credential within minutes.
+const REMOTE_IMPORT_URL_TTL_SEC = 15 * 60;
 import { pathFor, write as writeEnvFile } from "../lib/env-files.ts";
 import type { K8sPool } from "./k8s-pool.ts";
 import type { K8sLike } from "../lib/k8s-port.ts";
@@ -231,9 +236,42 @@ export class Deployer {
     if (!existsSync(tarPath)) return fail("locate-tar", `${tarPath} not found in bundle`);
 
     this.state.updateDeployment(id, "loading");
-    const loadR = await k8s.importImage(tarPath);
-    if (loadR.code !== 0) return fail("image-import", loadR.stderr || loadR.stdout);
-    ok("image-import", `runtime=${k8s.runtime}`);
+    // How the tar reaches the node's containerd depends on whether hyper runs ON the node (`local`)
+    // or the cluster is a remote machine (`remote-pull` — run an in-cluster import Job; P4.3). The
+    // cluster row is JSON-cast on read, so default the (possibly-absent) field to `local`.
+    const cluster = this.state.getCluster(service.clusterId);
+    const imageLoad = cluster ? clusterImageLoad(cluster) : "local";
+    if (imageLoad === "remote-pull") {
+      // The import Job runs in the service's namespace (where hyper is authorized to deploy this
+      // service), so it must exist BEFORE the Job — the bundle's namespace.yaml is applied later in the
+      // pipeline. Ensure it now; the later apply refines it (idempotent).
+      const nsReady = await k8s.applyManifest(
+        `apiVersion: v1\nkind: Namespace\nmetadata:\n  name: ${service.namespace}\n`,
+        service.namespace,
+      );
+      if (nsReady.code !== 0) return fail("image-import", `ensure namespace: ${(nsReady.stderr || nsReady.stdout).trim().slice(0, 200)}`);
+      const tarKey = `${r2Prefix}${tarName}`;
+      let url: string;
+      try {
+        url = await r2.presignGet(tarKey, REMOTE_IMPORT_URL_TTL_SEC);
+      } catch (e) {
+        return fail("image-import", `presign tar failed: ${(e as Error).message}`);
+      }
+      const imp = await runRemoteBundleImport({
+        k8s,
+        presignedUrl: url,
+        service: service.name,
+        namespace: service.namespace,
+        tag,
+        delay: (ms) => this.delay(ms),
+      });
+      if (!imp.ok) return fail("image-import", imp.message);
+      ok("image-import", imp.message);
+    } else {
+      const loadR = await k8s.importImage(tarPath);
+      if (loadR.code !== 0) return fail("image-import", loadR.stderr || loadR.stdout);
+      ok("image-import", `local ctr (runtime=${k8s.runtime})`);
+    }
 
     const k8sDir = join(workDir, service.manifestRoot);
     if (!existsSync(k8sDir)) return fail("manifests", `${k8sDir} not found`);

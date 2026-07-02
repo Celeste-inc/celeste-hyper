@@ -13,8 +13,9 @@ const LOGIN_LIMIT = 5;
 const LOGIN_WINDOW_MS = 60_000;
 const MIN_PASSWORD_LEN = 8;
 
-/** `/api/*` paths the global guard skips. */
-const CARVEOUTS = new Set(["/api/health", "/api/login", "/api/version"]);
+/** `/api/*` paths the global guard skips. `/api/enroll` (P4.1) self-authenticates with the one-shot
+ *  enrollment token in its body — the worker has no session/bearer — like the webhook receiver. */
+const CARVEOUTS = new Set(["/api/health", "/api/login", "/api/version", "/api/enroll"]);
 // The log STREAM (GET) self-authenticates (one-shot ?logToken= or cookie/bearer); `.../logs/token`
 // (POST, mints a token) is NOT matched here and stays behind the guard.
 const LOGS_STREAM = /^\/api\/services\/[^/]+\/logs$/;

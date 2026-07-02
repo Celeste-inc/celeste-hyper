@@ -42,6 +42,8 @@ const ConfigSchema = z.object({
   k8s: K8sSchema.default({ runtime: "auto", namespace: "default" }),
   stateDir: z.string().default("/var/lib/celeste-hyper"),
   envFilesDir: z.string().default("/etc/celeste-hyper/services"),
+  // Where enrolled-worker kubeconfigs are written (P4.1). Matches the install.sh layout.
+  clustersDir: z.string().default("/etc/celeste-hyper/clusters"),
   workDir: z.string().default("/var/lib/celeste-hyper/work"),
   // git-sync (P2.3). An empty `hostAllowlist` disables git-sync entirely (service create is refused).
   git: z
@@ -77,6 +79,7 @@ function envOverride(cfg: unknown): unknown {
   }
   if (Bun.env.HYPER_STATE_DIR) c.stateDir = Bun.env.HYPER_STATE_DIR;
   if (Bun.env.HYPER_ENV_FILES_DIR) c.envFilesDir = Bun.env.HYPER_ENV_FILES_DIR;
+  if (Bun.env.HYPER_CLUSTERS_DIR) c.clustersDir = Bun.env.HYPER_CLUSTERS_DIR;
   c.git = c.git ?? {};
   if (Bun.env.HYPER_GIT_HOST_ALLOWLIST !== undefined) {
     c.git.hostAllowlist = Bun.env.HYPER_GIT_HOST_ALLOWLIST.split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);

@@ -50,6 +50,23 @@ describe("cluster routes", () => {
     expect(r.body.cluster.enabled).toBe(true);
   });
 
+  it("POST /api/clusters cannot forge server-owned provenance (origin/enrolledAt stripped)", async () => {
+    const deps = makeFakeDeps();
+    const app = buildApp(deps);
+    const created = await call(app, "POST", "/api/clusters", {
+      id: "forge",
+      name: "Forge",
+      kubeconfigPath: "/k",
+      origin: "enrolled",
+      enrolledAt: "2099-01-01T00:00:00Z",
+    });
+    expect(created.status).toBe(201);
+    const list = await call(app, "GET", "/api/clusters");
+    const row = list.body.items.find((c: { id: string }) => c.id === "forge");
+    expect(row.origin).toBe("manual"); // normalized — the forged "enrolled" was dropped
+    expect(row.enrolledAt).toBeUndefined();
+  });
+
   it("POST /api/clusters duplicate id → 409 { error }", async () => {
     const deps = makeFakeDeps();
     seedCluster(deps, { id: "dup" });

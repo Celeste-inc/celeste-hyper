@@ -1,0 +1,90 @@
+# Fleet simulation (P4): one master + two "client cluster" Debian machines on one network.
+#
+# The master is celeste-hyper (built from the repo). worker-a / worker-b are plain Debian
+# containers — they become single-node k3s clusters by running deploy/join.sh, which installs
+# k3s and self-registers with the master via a one-shot enrollment token. The driver
+# (scripts/fleet-sim.sh) mints the tokens, triggers the joins, then deploys NGINX from the master
+# onto a worker and verifies it runs.
+#
+#   docker compose -f compose.fleet.yaml up -d --build
+#   ./scripts/fleet-sim.sh
+#   docker compose -f compose.fleet.yaml down -v
+name: celeste-fleet
+
+x-worker: &worker
+  image: debian:12
+  privileged: true            # k3s needs cgroup + mount access
+  restart: "no"
+  tmpfs:
+    - /run
+    - /run/lock
+  # PID-1 does the cgroup v2 "k3s in docker" fixup, then idles (see scripts/fleet-worker-init.sh).
+  command: ["/bin/sh", "/repo/scripts/fleet-worker-init.sh"]
+  networks: [fleet]
+
+services:
+  # S3-compatible object store standing in for Cloudflare R2. Pinned IP so the presigned URLs the
+  # master generates are reachable from the worker Job pods (k3s CoreDNS can't resolve compose names,
+  # so the R2 endpoint must be an IP the pods can route to via node egress).
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      - MINIO_ROOT_USER=fleetadmin
+      - MINIO_ROOT_PASSWORD=fleetadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      fleet:
+        ipv4_address: 172.31.7.10
+    healthcheck:
+      test: ["CMD", "sh", "-c", "mc ready local || curl -fsS http://127.0.0.1:9000/minio/health/live || true"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - HYPER_CONFIG=/app/config.fleet.json
+      - LOG_LEVEL=info
+    volumes:
+      - ./config.fleet.json:/app/config.fleet.json:ro
+      - master-data:/data
+    ports:
+      - "8088:8080"
+    networks: [fleet]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "kubectl version --client >/dev/null 2>&1 || true; wget -qO- http://127.0.0.1:8080/api/health >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  worker-a:
+    <<: *worker
+    hostname: worker-a
+    volumes:
+      - .:/repo:ro
+      - worker-a-state:/var/lib/rancher/k3s
+
+  worker-b:
+    <<: *worker
+    hostname: worker-b
+    volumes:
+      - .:/repo:ro
+      - worker-b-state:/var/lib/rancher/k3s
+
+networks:
+  fleet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.7.0/24
+
+volumes:
+  master-data:
+  worker-a-state:
+  worker-b-state:

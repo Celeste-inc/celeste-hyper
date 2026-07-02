@@ -13,6 +13,15 @@ export interface ClusterHealth {
   checkedAt: string;
 }
 
+/** Bound the per-cluster readiness probe so one hung/offline cluster can't stall the (serial) poller
+ *  tick for every other cluster — important once a fleet has many LAN workers, some powered off. */
+export const HEALTH_PROBE_TIMEOUT_SEC = 8;
+
+/** `kubectl get --raw=/readyz` argv with a bounded client-side request timeout. */
+export function readyzProbeArgs(timeoutSec: number = HEALTH_PROBE_TIMEOUT_SEC): string[] {
+  return ["get", "--raw=/readyz", `--request-timeout=${timeoutSec}s`];
+}
+
 export class K8sPool {
   private readonly cache = new Map<string, K8sLike>();
   private readonly health = new Map<string, ClusterHealth>();
@@ -59,7 +68,7 @@ export class K8sPool {
       this.health.set(id, h);
       return h;
     }
-    const r = await k8s.kubectl(["get", "--raw=/readyz"]).catch((e) => ({ code: 1, stdout: "", stderr: (e as Error).message }));
+    const r = await k8s.kubectl(readyzProbeArgs()).catch((e) => ({ code: 1, stdout: "", stderr: (e as Error).message }));
     const ok = r.code === 0 && r.stdout.trim() === "ok";
     const health: ClusterHealth = {
       clusterId: id,

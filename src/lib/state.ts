@@ -81,6 +81,22 @@ export interface WebhookRow {
   revoked_at: string | null;
 }
 
+export interface EnrollmentTokenRow {
+  id: number;
+  name: string;
+  hash_sha256: string;
+  cluster_id: string;
+  cluster_name: string;
+  default_namespace: string;
+  runtime: string;
+  image_load: string;
+  created_at: string;
+  expires_at: string;
+  used_at: string | null;
+  used_by: string | null;
+  revoked_at: string | null;
+}
+
 export class State {
   private readonly db: Database;
   private readonly clock: Clock;
@@ -500,6 +516,76 @@ export class State {
   /** Record that a webhook was legitimately used (post-signature-verification). */
   touchWebhook(id: number): void {
     this.db.run("UPDATE webhooks SET last_used_at = ? WHERE id = ?", [new Date(this.clock.now()).toISOString(), id]);
+  }
+
+  // ── enrollment tokens (P4.1) ───────────────────────────────────────
+  createEnrollmentToken(input: {
+    name: string;
+    hashSha256: string;
+    clusterId: string;
+    clusterName: string;
+    defaultNamespace: string;
+    runtime: string;
+    imageLoad: string;
+    expiresAt: string;
+  }): EnrollmentTokenRow {
+    const now = new Date(this.clock.now()).toISOString();
+    return this.db
+      .query(
+        "INSERT INTO enrollment_tokens (name, hash_sha256, cluster_id, cluster_name, default_namespace, runtime, image_load, created_at, expires_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+      )
+      .get(
+        input.name,
+        input.hashSha256,
+        input.clusterId,
+        input.clusterName,
+        input.defaultNamespace,
+        input.runtime,
+        input.imageLoad,
+        now,
+        input.expiresAt,
+      ) as EnrollmentTokenRow;
+  }
+
+  listEnrollmentTokens(): EnrollmentTokenRow[] {
+    return this.db.query("SELECT * FROM enrollment_tokens ORDER BY id DESC").all() as EnrollmentTokenRow[];
+  }
+
+  /** Read-only lookup of an active (unused, unrevoked, unexpired) token by its stored hash — used to
+   *  pre-check the target cluster id before consuming the token. No side effect. */
+  enrollmentTokenByHash(hash: string): EnrollmentTokenRow | null {
+    const nowIso = new Date(this.clock.now()).toISOString();
+    return (
+      (this.db
+        .query(
+          "SELECT * FROM enrollment_tokens WHERE hash_sha256 = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?",
+        )
+        .get(hash, nowIso) as EnrollmentTokenRow | null) ?? null
+    );
+  }
+
+  /** Atomically consume a token (single-use): flips `used_at` only if it is still unused, unrevoked,
+   *  and unexpired, and returns the row. A concurrent or replayed redemption loses the race → null. */
+  redeemEnrollmentToken(hash: string): EnrollmentTokenRow | null {
+    const nowIso = new Date(this.clock.now()).toISOString();
+    return (
+      (this.db
+        .query(
+          "UPDATE enrollment_tokens SET used_at = ?, used_by = cluster_id " +
+            "WHERE hash_sha256 = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ? RETURNING *",
+        )
+        .get(nowIso, hash, nowIso) as EnrollmentTokenRow | null) ?? null
+    );
+  }
+
+  /** Revoke a token (idempotent — only the first revoke of an unused token sets the timestamp). */
+  revokeEnrollmentToken(id: number): boolean {
+    const now = new Date(this.clock.now()).toISOString();
+    return (
+      this.db.run("UPDATE enrollment_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL AND used_at IS NULL", [now, id])
+        .changes > 0
+    );
   }
 
   /** Run a function inside a single transaction (used to make a check-then-enqueue atomic). */

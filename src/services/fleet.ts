@@ -21,6 +21,8 @@ export interface FleetInputs {
   recentDeployments: DeploymentRow[];
   capabilities: Map<string, CapabilitySummary>;
   unmanagedByCluster: Map<string, number>;
+  /** Caller-supplied current time (ms epoch) — keeps the 24h failure window deterministic for tests. */
+  now: number;
 }
 
 export interface FleetClusterRow {
@@ -119,11 +121,10 @@ export function aggregateFleet(input: FleetInputs): FleetSnapshot {
       message: d.message,
     }));
 
-  const now = Date.now();
   const failedDeploys24h = input.recentDeployments.filter((d) => {
     if (d.status !== "failed") return false;
     const t = Date.parse(d.finished_at ?? d.started_at);
-    return Number.isFinite(t) && now - t <= TWENTY_FOUR_HOURS_MS;
+    return Number.isFinite(t) && input.now - t <= TWENTY_FOUR_HOURS_MS;
   }).length;
 
   const summary: FleetSummary = {

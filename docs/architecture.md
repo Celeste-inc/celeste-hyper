@@ -227,7 +227,8 @@ flowchart TB
   that captures the shared `ApiDeps`. No globals, no `.decorate` (keeps strict-mode typing clean).
 - **Authentication** (P0.4): the `/api` group runs an `onBeforeHandle` guard that 401s any
   non-carve-out route lacking a valid `hyper_session` cookie or `Authorization: Bearer` JWT
-  (`routes/auth.ts` `authenticate`); carve-outs are health/login/version. Sessions are HS256
+  (`routes/auth.ts` `authenticate`); carve-outs are health/login/version plus self-authenticating
+  surfaces such as `/api/enroll`. Sessions are HS256
   JWTs (`lib/jwt.ts`, alg-pinned); passwords are argon2id (`lib/password.ts`); secrets resolve
   via `lib/auth-config.ts`; users/secret live in SQLite (`users`/`meta`). On first boot a
   temporary `admin`/`admin` is auto-created with `must_change_password`; the UI forces a change
@@ -236,6 +237,9 @@ flowchart TB
   via `routes/role-map.ts` (reads→viewer, mutations→operator) and, for cookie-auth mutations,
   a CSRF check — login mints a per-session `csrf` JWT claim, `/api/me` returns it, and the
   client echoes it as `X-CSRF-Token`. Bearer (CLI) clients are CSRF-exempt.
+  `X-Forwarded-*` headers are treated as trustworthy only when `HYPER_TRUST_X_FORWARDED=1` is set behind
+  an operator-controlled proxy/Tunnel that overwrites them; otherwise direct requests do not get to
+  choose their rate-limit identity or join URL.
 - **Machine tokens & webhooks** (P1.10, `routes/integrations.ts`). Two non-human entry points share
   the same guard. **Machine tokens** are bearer credentials with the `cht_` prefix: `authenticate`
   recognizes the prefix, looks up an HMAC-SHA256 (keyed by the server secret) of the presented token
@@ -261,6 +265,34 @@ flowchart TB
   the real probe uses Bun `fetch` with `tls.rejectUnauthorized:false` + an `AbortSignal.timeout`.
   Promotion to a cluster is a frontend convenience (prefills the Add Cluster form); hyper never
   fabricates a kubeconfig. Each scan is logged with the operator + targets (persistent audit → P2.1).
+- **Fleet enrollment** (P4.1, `services/enrollment.ts` + `routes/enrollment.ts` + `lib/enrollment-token.ts`).
+  A master turns a fresh LAN machine into a managed cluster without the manual kubeconfig dance. Admin-only
+  CRUD (`/api/enrollment-tokens`) mints a one-shot, HMAC-stored (`che_` prefix, distinct key domain from
+  machine tokens), short-TTL token that pre-declares the cluster id/runtime/`imageLoad` the worker will
+  become. `deploy/join.sh` installs single-node k3s on the worker and `POST`s its kubeconfig to the
+  `/api/enroll` **carve-out** (the token *is* the credential — a worker has no session). `EnrollmentService`
+  redeems the token atomically (single-use), **sanitizes the kubeconfig by parsing the YAML and walking the
+  object graph** (rejecting `exec`/`auth-provider`/`proxy-url`/`insecure-skip-tls-verify`/external-file
+  refs — a regex denylist is unsafe against flow-style YAML), validates the effective `current-context`
+  resolves to declared context/cluster/user entries with https + embedded CA + embedded static creds,
+  writes it `0600` via an exclusive temp-file +
+  atomic rename under `cfg.clustersDir`, registers the cluster (`origin: "enrolled"`), primes the pool +
+  capability probe, and audits explicitly (the HTTP audit hook skips carve-outs). Generated join commands
+  validate the external master URL and shell-quote every environment value. Migration `0016`;
+  `origin`/`enrolledAt` are server-owned (stripped from the client create/update schemas).
+- **Remote bundle delivery** (P4.3, `services/bundle-import.ts` + `services/deploy.ts`). A per-cluster
+  `Cluster.imageLoad` (`local` default | `remote-pull`) decides how an r2-bundle image tar reaches the
+  node. `local` = today's `ctr import` on the hyper host (correct only when hyper *is* the node).
+  `remote-pull` (enrolled clusters' default) skips the local import: the deployer presigns the tar
+  (`R2Like.presignGet`) and runs a one-shot **privileged in-cluster import Job** (`buildBundleImportJob` —
+  a tiny curl container that fetches the tar then runs the **node's own k3s binary** — hostPath-mounted,
+  exact-version match, no 250 MB image pull — as `k3s ctr -n k8s.io images import` against the host
+  containerd socket; the presigned URL via env not argv, `backoffLimit:0` + `activeDeadlineSeconds` +
+  `ttlSecondsAfterFinished`), polls it to completion (past the Job deadline), captures its logs on failure,
+  and tears it down (deleting any prior Job first so retries are clean). So a bundle deployed from the
+  master lands the image on the *worker's* node — no registry credentials on the cluster. `registry-pull`
+  (ACR/GHCR/…) is unaffected — the node always pulls those itself. The builder + `runRemoteBundleImport`
+  orchestration are pure/port-mockable and were live-validated end to end (`scripts/fleet-r2-sim.sh`).
 - **git-sync source type** (P2.3, `lib/git.ts` + `services/deploy.ts` `deployGitSync` + `services/poller.ts`).
   A third `sourceType`: manifests come from a git repo at a ref. The pure validators (`validateGitUrl`
   SSRF allowlist + transport check, `gitHost`, `validateGitPath`/`validateDeployKeyPath` traversal,

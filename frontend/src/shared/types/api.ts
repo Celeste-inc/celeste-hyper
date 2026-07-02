@@ -16,6 +16,22 @@ export interface MachineToken {
   revokedAt: string | null;
 }
 
+export interface EnrollmentToken {
+  id: number;
+  name: string;
+  clusterId: string;
+  clusterName: string;
+  defaultNamespace: string;
+  runtime: RuntimeKind;
+  imageLoad: "local" | "remote-pull";
+  createdAt: string;
+  expiresAt: string;
+  usedAt: string | null;
+  usedBy: string | null;
+  revokedAt: string | null;
+  status: "active" | "used" | "revoked" | "expired";
+}
+
 export interface Webhook {
   id: number;
   name: string;
@@ -253,6 +269,11 @@ export interface Cluster {
   kubeconfigPath?: string;
   defaultNamespace: string;
   runtime: RuntimeKind;
+  /** How r2-bundle images reach the node (P4.3): `local` (hyper on the node) or `remote-pull` (in-cluster import Job). */
+  imageLoad?: "local" | "remote-pull";
+  /** How the cluster was registered (P4.1): `manual` or `enrolled` (worker self-registration). */
+  origin?: "manual" | "enrolled";
+  enrolledAt?: string;
   enabled: boolean;
   health?: ClusterHealth;
   serviceCount: number;

@@ -12,4 +12,7 @@ export interface R2Like {
   listObjects(prefix: string): Promise<R2Object[]>;
   download(key: string, dest: string): Promise<void>;
   exists(key: string): Promise<boolean>;
+  /** A short-TTL presigned GET URL for one object (P4.3): lets a remote node pull a bundle tar
+   *  directly, without the node holding any R2 credentials. */
+  presignGet(key: string, expiresSec: number): Promise<string>;
 }

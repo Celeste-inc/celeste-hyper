@@ -30,7 +30,7 @@ const OPERATOR_READS = [
 // Admin-only surface; matched by exact path or prefix. Machine tokens and webhook management mint or
 // revoke credentials, so they are admin-only (P1.10). The webhook *receiver*
 // (/api/webhooks/registry/:secretId) is an auth carve-out and never reaches this check.
-const ADMIN_ONLY_PREFIXES = ["/api/users", "/api/machine-tokens", "/api/webhooks", "/api/discovery", "/api/settings", "/api/setup"];
+const ADMIN_ONLY_PREFIXES = ["/api/users", "/api/machine-tokens", "/api/webhooks", "/api/discovery", "/api/settings", "/api/setup", "/api/enrollment-tokens"];
 
 /**
  * The minimum role required for `method path`. Reads → viewer; mutations → operator;

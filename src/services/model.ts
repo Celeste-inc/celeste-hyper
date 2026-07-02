@@ -1,8 +1,23 @@
 import { z } from "zod";
 
 const ID_RE = /^[a-z0-9][a-z0-9.-]*$/;
+const DNS_1123_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export const ClusterRuntimeSchema = z.enum(["auto", "k3s", "docker", "containerd"]);
+
+// How an r2-bundle image tar reaches the target node's container runtime (P4.3):
+//   - local       — `ctr import` on the hyper host. Correct ONLY when hyper runs ON the node
+//                    (single-host bootstrap install, the compose demo). Default for back-compat.
+//   - remote-pull — the node loads the image itself via an in-cluster import Job. Required when the
+//                    cluster is a *remote* machine (e.g. an enrolled worker). registry-pull is
+//                    unaffected by this knob (the node always pulls registry images itself).
+export const ImageLoadSchema = z.enum(["local", "remote-pull"]);
+export type ImageLoad = z.infer<typeof ImageLoadSchema>;
+
+// How a cluster entered the registry: `manual` (operator pointed at a kubeconfig) or `enrolled`
+// (a worker self-registered via a one-shot enrollment token, P4.1). Server-owned: never patchable.
+export const ClusterOriginSchema = z.enum(["manual", "enrolled"]);
+export type ClusterOrigin = z.infer<typeof ClusterOriginSchema>;
 
 export const ClusterModelSchema = z.object({
   id: z.string().min(1).regex(ID_RE, "lowercase letters, digits, dot, dash"),
@@ -10,6 +25,11 @@ export const ClusterModelSchema = z.object({
   kubeconfigPath: z.string().min(1),
   defaultNamespace: z.string().min(1).default("default"),
   runtime: ClusterRuntimeSchema.default("auto"),
+  // Optional (not `.default`) so existing JSON-cast rows + ClusterModel literals stay valid; absence is
+  // read as the default via `clusterImageLoad` / `clusterOrigin` and normalized in the API response.
+  imageLoad: ImageLoadSchema.optional(),
+  origin: ClusterOriginSchema.optional(),
+  enrolledAt: z.string().optional(),
   description: z.string().optional(),
   accessHost: z.string().optional(),
   enabled: z.boolean().default(true),
@@ -18,8 +38,23 @@ export const ClusterModelSchema = z.object({
 });
 export type ClusterModel = z.infer<typeof ClusterModelSchema>;
 
-export const CreateClusterSchema = ClusterModelSchema;
-export const UpdateClusterSchema = ClusterModelSchema.partial();
+// `origin`/`enrolledAt` are server-owned (set only by the enrollment path, which parses through
+// ClusterModelSchema directly). Omit them from the client-facing create/update schemas so an
+// operator can neither forge `origin: "enrolled"` provenance on create nor rewrite it on patch.
+// `imageLoad` stays settable so a manually-registered remote cluster can opt into remote-pull.
+export const CreateClusterSchema = ClusterModelSchema.omit({ origin: true, enrolledAt: true });
+export const UpdateClusterSchema = ClusterModelSchema.partial().omit({ origin: true, enrolledAt: true });
+
+/** Existing cluster rows are JSON-cast (not Zod-parsed) on read, so pre-P4 rows lack `imageLoad`.
+ *  Read it through this so the absence defaults to `local` everywhere (deploy path + API). */
+export function clusterImageLoad(cluster: ClusterModel): ImageLoad {
+  return cluster.imageLoad ?? "local";
+}
+
+/** Same defaulting for provenance, for the API response shape. */
+export function clusterOrigin(cluster: ClusterModel): ClusterOrigin {
+  return cluster.origin ?? "manual";
+}
 
 export const DeployModeSchema = z.enum(["rolling", "recreate", "canary", "blue-green"]);
 export type DeployMode = z.infer<typeof DeployModeSchema>;
@@ -67,7 +102,10 @@ export type ExposeConfig = z.infer<typeof ExposeSchema>;
 
 const BaseService = {
   name: z.string().min(1).regex(ID_RE, "lowercase letters, digits, dot, dash"),
-  namespace: z.string().min(1).default("default"),
+  // DNS-1123 label — Kubernetes' own namespace grammar. Also stops a newline/`---` from being smuggled
+  // into a hand-built Namespace/Service YAML (deploy.ts / buildExposeYaml), matching how every other
+  // argv/YAML-bound field in this file is regex-locked.
+  namespace: z.string().regex(DNS_1123_LABEL, "1-63 lowercase alphanumerics or '-' (DNS-1123 label)").default("default"),
   clusterId: z.string().min(1).regex(ID_RE),
   containerName: z.string().regex(ID_RE, "lowercase letters, digits, dot, dash").optional(), // also kept safe for the verify jsonpath
   enabled: z.boolean().default(true),

@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createWriteStream } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -101,6 +102,10 @@ export class R2 implements R2Like {
     const body = r.Body as Readable;
     await pipeline(body, createWriteStream(dest));
     log.debug("r2.downloaded", { key, dest, size: r.ContentLength });
+  }
+
+  async presignGet(key: string, expiresSec: number): Promise<string> {
+    return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), { expiresIn: expiresSec });
   }
 
   async exists(key: string): Promise<boolean> {

@@ -14,6 +14,7 @@ import { templateRoutes } from "./templates.ts";
 import { registrySourceRoutes } from "./registry-sources.ts";
 import { scalingRoutes } from "./scaling.ts";
 import { discoveryRoutes } from "./discovery.ts";
+import { enrollmentRoutes } from "./enrollment.ts";
 import { helmRoutes } from "./helm.ts";
 import { auditRoutes } from "./audit.ts";
 import { setupRoutes } from "./setup.ts";
@@ -34,6 +35,7 @@ const OPENAPI_TAGS = [
   { name: "env", description: "Per-service env files" },
   { name: "integrations", description: "Machine tokens and registry webhooks" },
   { name: "discovery", description: "Network scan for Kubernetes API servers" },
+  { name: "enrollment", description: "Fleet enrollment — worker self-registration tokens" },
   { name: "helm", description: "Helm release operations" },
   { name: "audit", description: "Audit trail of mutations" },
   { name: "setup", description: "First-run setup and R2 settings" },
@@ -78,6 +80,7 @@ export function buildApp(deps: ApiDeps) {
     .use(registrySourceRoutes(deps))
     .use(scalingRoutes(deps))
     .use(discoveryRoutes(deps))
+    .use(enrollmentRoutes(deps))
     .use(helmRoutes(deps))
     .use(auditRoutes(deps))
     .use(setupRoutes(deps));

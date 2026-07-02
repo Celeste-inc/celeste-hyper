@@ -38,10 +38,12 @@ export function ClusterCard({ cluster, onEdit, onCheck, onBrowseCrds }: { cluste
             <HealthPill health={cluster.health} />
             <SkewPill skew={cluster.versionSkew} />
             <Pill tone="acc">{cluster.runtime}</Pill>
+            {cluster.origin === "enrolled" ? <Pill tone="ok">{t("enrolled")}</Pill> : null}
           </span>
           <span className="resource-facts">
             <Fact label={t("ID")}><code>{cluster.id}</code></Fact>
             <Fact label={t("Namespace")}><code>{cluster.defaultNamespace}</code></Fact>
+            {cluster.imageLoad === "remote-pull" ? <Fact label={t("Image load")}>{t("remote-pull")}</Fact> : null}
             <Fact label={t("Services")}>{cluster.serviceCount}</Fact>
             <Fact label={t("Last check")}>{cluster.health?.checkedAt ? fmtTs(cluster.health.checkedAt) : t("Never")}</Fact>
           </span>

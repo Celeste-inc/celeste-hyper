@@ -22,6 +22,7 @@ export type ModalState =
   | { type: "terminal"; name: string; pod: string; container: string }
   | { type: "pod-delete"; name: string; pod: string }
   | { type: "integrations" }
+  | { type: "enrollment" }
   | { type: "setup" }
   | { type: "discovery" }
   | { type: "audit" }

@@ -21,8 +21,9 @@ describe("embedded migrations", () => {
       "0013-audit-events",
       "0014-exec-tokens",
       "0015-cluster-version",
+      "0016-enrollment-tokens",
     ]);
-    expect(BINARY_SCHEMA_VERSION).toBe(15);
+    expect(BINARY_SCHEMA_VERSION).toBe(16);
   });
 
   it("applies the embedded migrations and creates the documented schema", () => {
@@ -39,7 +40,7 @@ describe("embedded migrations", () => {
         .all() as Array<{ name: string }>
     ).map((r) => r.name);
     // every table the migrations should have created is present (toContain survives future migrations)
-    for (const t of ["audit_events", "cluster_capabilities", "clusters", "current_deployment", "deployments", "exec_tokens", "jobs", "locks", "log_tokens", "machine_tokens", "meta", "service_degraded", "services", "users", "webhooks", "workload_overrides"]) {
+    for (const t of ["audit_events", "cluster_capabilities", "clusters", "current_deployment", "deployments", "enrollment_tokens", "exec_tokens", "jobs", "locks", "log_tokens", "machine_tokens", "meta", "service_degraded", "services", "users", "webhooks", "workload_overrides"]) {
       expect(tables).toContain(t);
     }
 

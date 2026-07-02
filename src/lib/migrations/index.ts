@@ -13,6 +13,7 @@ import webhooks from "./0012-webhooks.sql" with { type: "text" };
 import auditEvents from "./0013-audit-events.sql" with { type: "text" };
 import execTokens from "./0014-exec-tokens.sql" with { type: "text" };
 import clusterVersion from "./0015-cluster-version.sql" with { type: "text" };
+import enrollmentTokens from "./0016-enrollment-tokens.sql" with { type: "text" };
 import type { RawMigration } from "../migrations.ts";
 
 /**
@@ -37,6 +38,7 @@ export const MIGRATIONS: RawMigration[] = [
   { version: "0013-audit-events", sql: auditEvents },
   { version: "0014-exec-tokens", sql: execTokens },
   { version: "0015-cluster-version", sql: clusterVersion },
+  { version: "0016-enrollment-tokens", sql: enrollmentTokens },
 ];
 
 /** Highest schema version this binary knows; used for downgrade protection. */

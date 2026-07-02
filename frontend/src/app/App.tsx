@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Cloud, Moon, Plug, Radar, RefreshCw, ScrollText, Settings2, Sun } from "lucide-react";
+import { Cloud, Moon, Plug, Radar, RefreshCw, ScrollText, Server, Settings2, Sun } from "lucide-react";
 import type { Cluster, EnvKind, ServiceListItem, WorkloadSummary } from "../shared/types/api";
 import { http, setCsrfToken } from "../shared/api/client";
 import { apiError, fmtTs } from "../shared/utils/format";
@@ -23,6 +23,7 @@ import { IngressYaml } from "../screens/modals/IngressYaml";
 import { HpaEdit } from "../screens/modals/HpaEdit";
 import { History } from "../screens/modals/History";
 import { Integrations } from "../screens/modals/Integrations";
+import { FleetEnrollment } from "../screens/modals/FleetEnrollment";
 import { ServiceForm } from "../screens/modals/ServiceForm";
 import { Settings } from "../screens/modals/Settings";
 import { DeleteService } from "../screens/modals/DeleteService";
@@ -169,6 +170,7 @@ export function App() {
             <span className="scan-status"><RefreshCw size={13} />{lastTickAt ? `Updated ${fmtTs(lastTickAt)}` : t("Waiting for first scan")}</span>
             <button className="theme-toggle" type="button" aria-label={t("Audit")} onClick={() => setModal({ type: "audit" })}><ScrollText size={16} /></button>
             {role === "admin" ? <button className="theme-toggle" type="button" aria-label={t("Setup")} onClick={() => setModal({ type: "setup" })}><Settings2 size={16} /></button> : null}
+            {role === "admin" ? <button className="theme-toggle" type="button" aria-label={t("Add machine")} onClick={() => setModal({ type: "enrollment" })}><Server size={16} /></button> : null}
             {role === "admin" ? <button className="theme-toggle" type="button" aria-label={t("Integrations")} onClick={() => setModal({ type: "integrations" })}><Plug size={16} /></button> : null}
             {role === "admin" ? <button className="theme-toggle" type="button" aria-label={t("Discovery")} onClick={() => setModal({ type: "discovery" })}><Radar size={16} /></button> : null}
             <button className="theme-toggle" type="button" aria-label={theme === "dark" ? t("Switch to light mode") : t("Switch to dark mode")} onClick={toggleTheme}>{theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}</button>
@@ -219,6 +221,7 @@ function renderModal(modal: ModalState, actions: ModalActions, clusters: Cluster
   if (modal.type === "crds") return <CrdBrowser clusterId={modal.clusterId} {...actions} />;
   if (modal.type === "hpa") return <HpaEdit name={modal.name} hpa={modal.hpa} {...actions} />;
   if (modal.type === "integrations") return <Integrations {...actions} />;
+  if (modal.type === "enrollment") return <FleetEnrollment {...actions} />;
   if (modal.type === "setup") return <Setup {...actions} />;
   if (modal.type === "discovery") return <Discovery {...actions} />;
   if (modal.type === "audit") return <AuditTimeline {...actions} />;

@@ -78,6 +78,8 @@ export interface FakeDepsOptions {
   k8s?: Partial<FakeK8s> | null;
   health?: ClusterHealth;
   envFilesDir?: string;
+  /** Directory enrolled-worker kubeconfigs are written to (P4.1); defaults to a fresh temp dir. */
+  clustersDir?: string;
   /** Inject a throwing poller to exercise the 500 path. */
   pollerThrows?: boolean;
   /** Auth: JWT secret used to sign/verify sessions in tests. */
@@ -144,6 +146,7 @@ export function makeFakeDeps(opts: FakeDepsOptions = {}): ApiDeps {
     k8s: { runtime: "auto", namespace: "default" },
     stateDir: tmpdir(),
     envFilesDir,
+    clustersDir: opts.clustersDir ?? mkdtempSync(join(tmpdir(), "celeste-clusters-")),
     workDir: tmpdir(),
     poller: { intervalSec: 15, autoDeploy: false, enabled: true },
     services: [],
@@ -199,6 +202,7 @@ export function makeFakeDeps(opts: FakeDepsOptions = {}): ApiDeps {
     listObjects: async () => [],
     exists: async () => false,
     download: async () => {},
+    presignGet: async (key: string) => `https://r2.test/${key}?X-Amz-Signature=fake`,
   };
   const r2Sources = new R2SourceStore(state, cfg.r2, r2);
   const registrySources = new RegistrySourceStore(state);

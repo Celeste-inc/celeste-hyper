@@ -24,6 +24,8 @@ import type {
   HelmInfo,
   HpaView,
   MachineToken,
+  EnrollmentToken,
+  RuntimeKind,
   NetworkingService,
   PodGroup,
   PodMetricsResponse,
@@ -175,6 +177,10 @@ export const http = {
   createWebhook: (body: { name: string; kind: RegistryKind; serviceScope?: string | null; clusterScope?: string | null }) =>
     json<{ secret: string; webhook: Webhook }>("/webhooks", "POST", body),
   revokeWebhook: (id: number) => api<{ revoked: boolean }>("/webhooks/" + id, { method: "DELETE" }),
+  enrollmentTokens: () => api<{ items: EnrollmentToken[] }>("/enrollment-tokens"),
+  createEnrollmentToken: (body: { name: string; clusterId: string; clusterName?: string; defaultNamespace?: string; runtime?: RuntimeKind; imageLoad?: EnrollmentToken["imageLoad"]; expiresInMinutes?: number }) =>
+    json<{ token: string; joinCommand: string; enrollmentToken: EnrollmentToken }>("/enrollment-tokens", "POST", body),
+  revokeEnrollmentToken: (id: number) => api<{ revoked: boolean }>("/enrollment-tokens/" + id, { method: "DELETE" }),
   scanDiscovery: (body: { targets: string[]; ports?: number[]; timeoutMs?: number; consent: string }) =>
     json<DiscoveryScanResult>("/discovery/scan", "POST", body),
   audit: (qs: string) => api<AuditPage>("/audit" + (qs ? "?" + qs : "")),

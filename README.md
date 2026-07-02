@@ -41,6 +41,26 @@ sudo /opt/celeste-hyper/source/deploy/update.sh --rollback
 ```
 
 
+## Fleet — add more machines (master + workers)
+
+Turn a second machine on the same LAN into a managed cluster without the manual kubeconfig dance.
+On the **master**, mint a one-shot enrollment token (UI: the *Add machine* button, admin only — or
+`POST /api/enrollment-tokens`). It prints a paste-ready command; run it as root on the **worker**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Celeste-inc/celeste-hyper/main/deploy/join.sh \
+  | sudo MASTER_URL=https://master.lan:8080 ENROLL_TOKEN=che_xxxxx bash
+```
+
+`join.sh` installs single-node k3s, pins the API-server certificate to the worker's LAN IP, rewrites
+the kubeconfig, and self-registers with the master over `/api/enroll`. The worker then shows up as a
+cluster you can deploy to. Enrolled clusters default to `imageLoad: remote-pull`, so **`r2-bundle`
+deploys land the image on the *worker's* node** (via a one-shot in-cluster import Job) and
+`registry-pull` (ACR/GHCR/…) works as usual — both from the master. Enrollment tokens are single-use,
+short-lived (default 30 min), and HMAC-stored. Prefer HTTPS (reverse proxy / VPN) outside a trusted
+LAN. See [`docs/clusters.md`](./docs/clusters.md#fleet-enrollment-p4) for the full flow, and
+`./scripts/fleet-sim.sh` for a container-based end-to-end demo (master + two workers + an NGINX deploy).
+
 Common overrides:
 
 ```bash

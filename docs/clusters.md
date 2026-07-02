@@ -53,6 +53,10 @@ The kubeconfig file is the only thing that gets a service from "registered" to "
 - **Credentials inside the file are the cluster's full authority** for whatever user it embeds. Treat the file like a private key:
   - `chmod 0600 prod.kubeconfig`
   - owner = the user running celeste-hyper (often `root` via systemd).
+- **`current-context` is load-bearing.** Hyper validates that it points to a declared context whose
+  cluster and user both exist; the effective cluster must use `https://` with embedded
+  `certificate-authority-data`, and the effective user must use embedded static credentials. Decoy
+  clusters/users do not make an unsafe current context acceptable.
 - **Service account, not the admin user.** For production clusters, generate a dedicated `ServiceAccount` + `ClusterRoleBinding` and bake its token into a kubeconfig. The included script in the *Real cluster onboarding* section below shows the minimum permissions.
 - **Token rotation.** Long-lived tokens still expire. If the cluster started using bound tokens, periodically refresh and overwrite the kubeconfig file. Celeste Hyper picks up the new contents on the next `K8sPool.invalidate()` (triggered automatically when you `PATCH /clusters/:id`).
 
@@ -192,6 +196,58 @@ the Add Cluster form. The "Discovery" page in the UI wraps this.
 
 Discovery only *finds* candidates — it never fabricates credentials. Promotion prefills the server
 endpoint into the Add Cluster form; you still supply a kubeconfig the normal way (see below).
+
+## Fleet enrollment (P4)
+
+The "Real cluster onboarding" flow above is the manual path: you generate a kubeconfig and register it
+yourself. **Fleet enrollment** automates it for the common case — a fresh LAN machine you want to turn
+into a managed cluster from the master, with no kubeconfig copying.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Admin
+  participant Master as celeste-hyper (master)
+  participant Worker as new machine
+  Admin->>Master: POST /api/enrollment-tokens { clusterId, runtime, imageLoad } (admin only)
+  Master-->>Admin: { token: che_…, joinCommand }  (shown once)
+  Admin->>Worker: run joinCommand as root (MASTER_URL + ENROLL_TOKEN)
+  Worker->>Worker: install single-node k3s (--tls-san <LAN IP>, kubeconfig 0600)
+  Worker->>Master: POST /api/enroll { token, kubeconfig, runtime, nodeName }  (carve-out)
+  Master->>Master: redeem token (single-use), sanitize kubeconfig, write 0600, register cluster, capability probe, audit
+  Master-->>Worker: 201 { cluster }
+```
+
+- **Token** — `che_`-prefixed, HMAC-SHA256-stored (a DB leak can't recover or forge it), single-use
+  (atomic redeem), short-lived (default 30 min, admin-set), admin-minted/revoked. It pre-declares the
+  `clusterId`/`clusterName`/`runtime`/`imageLoad` the worker will become, so the worker can only supply
+  the kubeconfig — never widen what it registers.
+- **`/api/enroll`** — an auth carve-out (the token *is* the credential; a worker has no session),
+  per-IP rate-limited and body-capped. The posted kubeconfig is **sanitized by parsing the YAML and
+  walking the object graph**: `exec`/`auth-provider` credential plugins, `proxy-url`,
+  `insecure-skip-tls-verify`, and external file references (`tokenFile`, `client-key`,
+  `client-certificate`, `certificate-authority` as paths) are rejected; a self-contained https server
+  with embedded `certificate-authority-data` + static credentials (the k3s default) is required, and
+  `current-context` must resolve to declared context/cluster/user entries. The
+  file is written `0600` under `clustersDir` (default `/etc/celeste-hyper/clusters`) via an exclusive
+  temp file + atomic rename. A cluster-id collision is refused (409) and never overwrites.
+- **`imageLoad`** — enrolled clusters default to `remote-pull` (see [`sources.md`](./sources.md) and
+  the architecture doc): the *worker's* node loads r2-bundle images itself via a one-shot privileged
+  in-cluster import Job, so a bundle deployed from the master lands on the remote machine. `local`
+  (the default for manually-registered clusters) means hyper runs on the node and imports with
+  `ctr` locally — only correct when the master *is* the node. A manually-registered remote cluster can
+  opt into remote-pull with `PATCH /api/clusters/:id { "imageLoad": "remote-pull" }`.
+
+Security posture: enrollment moves a kubeconfig (full cluster authority) over HTTP, so it is gated
+exactly like the other RCE-equivalent surfaces in hyper (exec WS, webhook receiver) — admin-minted
+single-use token + token-aware rate-limit + audit. If exposed behind a proxy or Cloudflare Tunnel,
+ensure it overwrites `X-Forwarded-*` headers before setting `HYPER_TRUST_X_FORWARDED=1`; otherwise
+forwarded headers are ignored and token throttling is the primary brute-force brake. **Use HTTPS** (a reverse proxy or a VPN) for `MASTER_URL` outside a
+trusted LAN; `join.sh` warns when it is plaintext `http://`. The UI-provided `joinCommand` is
+shell-escaped; do not hand-edit it except for documented environment overrides.
+
+`./scripts/fleet-sim.sh` stands up a master + two Debian workers in containers, enrolls both via the
+real `join.sh`, and deploys NGINX from the master onto a worker — an end-to-end proof of the flow.
 
 ## Removing a cluster
 

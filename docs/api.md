@@ -3,7 +3,7 @@
 All endpoints are mounted under `/api`. Requests and responses are JSON unless noted otherwise.
 
 Since P0.4 every `/api/*` route requires authentication except the carve-outs `/api/health`,
-`/api/login`, and `/api/version`. Authenticate with the `hyper_session` cookie (set by
+`/api/login`, `/api/version`, and token-authenticated carve-outs such as `/api/enroll`. Authenticate with the `hyper_session` cookie (set by
 `POST /api/login`) or an `Authorization: Bearer <jwt>` header. Unauthenticated requests get
 `401 { "error": "unauthorized" }`. See [Authentication](#authentication). Still run hyper
 behind TLS (reverse proxy / Cloudflare Tunnel).
@@ -64,6 +64,10 @@ Cookie-authenticated **mutations** must send `X-CSRF-Token` equal to the per-ses
 from `GET /api/me`; missing or wrong → `403 { "error": "csrf_missing" | "csrf_invalid" }`.
 Bearer-token (CLI/automation) clients are **exempt** from CSRF — a browser cannot forge their
 `Authorization` header.
+
+When hyper sits behind a reverse proxy or Cloudflare Tunnel, configure it so forwarding headers are
+overwritten, not appended from user input. Set `HYPER_TRUST_X_FORWARDED=1` only in that topology; direct
+deployments ignore `X-Forwarded-*` for enrollment rate-limit identity.
 
 ## Health & system
 
@@ -142,6 +146,11 @@ cluster's apiserver version (probed via `kubectl version -o json` during the cap
 from the apiserver (the Kubernetes version-skew policy); the cluster card shows a warning pill. Either
 version may be `null` until probed, in which case `versionSkew.ok` is `true` (no false alarm).
 
+Each item also carries (additive, P4): `imageLoad` (`"local"` | `"remote-pull"` — how r2-bundle images
+reach the node), `origin` (`"manual"` | `"enrolled"` — how the cluster was registered), and, for
+enrolled clusters, `enrolledAt`. `imageLoad`/`origin` are always present (normalized; pre-P4 rows read
+as `local`/`manual`). `origin`/`enrolledAt` are server-owned — they cannot be set via `POST`/`PATCH`.
+
 ### `POST /api/clusters`
 
 Body — all fields required:
@@ -194,6 +203,40 @@ Raw YAML of an Ingress object (`kubectl get ingress … -o yaml`). **Operator+**
 `403`; an unknown ingress returns `404`; a non-RFC-1123 namespace/name returns `400`. Returns
 `{ "yaml": "apiVersion: networking.k8s.io/v1\n..." }`. Backs the "View source" button on ingress
 endpoints in the service detail.
+
+## Fleet enrollment (P4)
+
+Turn a fresh LAN machine into a managed cluster from the master. Token management is **admin-only**;
+`/api/enroll` is an auth carve-out authenticated solely by the one-shot token (a worker has no session).
+See [`clusters.md`](./clusters.md#fleet-enrollment-p4).
+
+### `GET /api/enrollment-tokens`
+
+`{ items: [{ id, name, clusterId, clusterName, defaultNamespace, runtime, imageLoad, createdAt,
+expiresAt, usedAt, usedBy, revokedAt, status }] }`. `status` is derived (`active`|`used`|`revoked`|
+`expired`). The HMAC hash is never returned.
+
+### `POST /api/enrollment-tokens`
+
+Body: `{ name, clusterId, clusterName?, defaultNamespace?="default", runtime?="k3s",
+imageLoad?="remote-pull", expiresInMinutes?=30 }`. `400` if `clusterId` is already a registered cluster.
+Returns `201 { token, joinCommand, enrollmentToken }` — the cleartext `token` and the paste-ready,
+shell-escaped `joinCommand` are shown **once**.
+
+### `DELETE /api/enrollment-tokens/:id`
+
+Revokes an unused token → `{ revoked: true }`; `404` if it's already used/revoked or unknown.
+
+### `POST /api/enroll` (carve-out)
+
+Body: `{ token, kubeconfig, runtime?, nodeName? }`. Redeems the token (atomic, single-use), sanitizes
+the kubeconfig (YAML-parsed object-graph walk — rejects `exec`/`auth-provider`/`proxy-url`/
+`insecure-skip-tls-verify`/external file refs; requires `current-context` to resolve to declared
+context/cluster/user entries, all clusters to use https with embedded `certificate-authority-data`, and
+the effective user to use embedded static credentials), writes it `0600` under `clustersDir`, registers the cluster
+(`origin: "enrolled"`, the token's `imageLoad`), runs the capability probe, and audits. Returns
+`201 { cluster }`. `401` invalid/expired/used token · `400` bad kubeconfig · `409` cluster-id
+collision · `413` body too large · `429` rate-limited. The token + kubeconfig are never logged/audited.
 
 ## Services
 

@@ -47,6 +47,7 @@ export const fleetRoutes = (deps: ApiDeps) =>
           recentDeployments: recent,
           capabilities: capSummary,
           unmanagedByCluster,
+          now: deps.clock.now(),
         });
       },
       { detail: { summary: "Federation snapshot across all clusters", tags: ["fleet"] } },

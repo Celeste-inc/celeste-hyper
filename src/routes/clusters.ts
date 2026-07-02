@@ -1,7 +1,7 @@
 import { Elysia } from "elysia";
 import { z } from "zod";
 import type { ApiDeps } from "./deps.ts";
-import { CreateClusterSchema, UpdateClusterSchema } from "../services/model.ts";
+import { CreateClusterSchema, UpdateClusterSchema, clusterImageLoad, clusterOrigin } from "../services/model.ts";
 import { parseCrdList, parseCrList, isValidResource, isValidName } from "../services/crds.ts";
 import { evaluateSkew } from "../lib/kube-version.ts";
 import { aggregateClusterPorts, listClusterPortAllocations, type RawServiceList } from "../services/port-registry.ts";
@@ -60,7 +60,9 @@ export const clusterRoutes = (deps: ApiDeps) =>
           const { capabilities, lastCheckedAt, serverVersion } = deps.capabilities.merged(cl.id);
           // kubectl<->apiserver minor skew (CC.5): ok/null until both versions are known.
           const versionSkew = evaluateSkew(kubectlVersion, serverVersion);
-          return { ...cl, health, serviceCount, capabilities, capabilitiesCheckedAt: lastCheckedAt, kubectlVersion, serverVersion, versionSkew };
+          // Normalize the P4 fields so they are ALWAYS present (pre-P4 rows are JSON-cast, not
+          // Zod-parsed, so their defaults never materialized — keep the contract field stable).
+          return { ...cl, imageLoad: clusterImageLoad(cl), origin: clusterOrigin(cl), health, serviceCount, capabilities, capabilitiesCheckedAt: lastCheckedAt, kubectlVersion, serverVersion, versionSkew };
         });
         return { items };
       },
