@@ -1,0 +1,14 @@
+# Default owners for everything in the repo — required reviewers on every PR.
+* @vinnedev
+
+# Security-sensitive surfaces get an explicit extra pass.
+/src/lib/jwt.ts @vinnedev
+/src/lib/auth-config.ts @vinnedev
+/src/services/enrollment.ts @vinnedev
+/src/routes/enrollment.ts @vinnedev
+/src/routes/integrations.ts @vinnedev
+/docs/guardrails.md @vinnedev
+
+# CI/CD and release pipeline changes.
+/.github/ @vinnedev
+/deploy/ @vinnedev
