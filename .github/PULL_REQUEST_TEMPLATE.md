@@ -12,4 +12,4 @@
 - [ ] New/changed schema goes through `src/lib/migrations/` (no inline DDL)
 - [ ] No secrets, tokens, or credentials committed
 - [ ] Docs updated if behavior/API changed (`docs/`)
-- [ ] Security-sensitive change reviewed against [`docs/guardrails.md`](../docs/guardrails.md)
+- [ ] Security-sensitive change reviewed against [`docs/architecture.md`](../docs/architecture.md)
