@@ -25,9 +25,8 @@ within 30 days for confirmed high/critical issues.
 
 celeste-hyper embeds several security-sensitive surfaces (auth, RBAC, machine tokens,
 webhook receivers, fleet enrollment, exec-over-websocket, kubeconfig handling). See
-[`docs/architecture.md`](./docs/architecture.md) and [`docs/guardrails.md`](./docs/guardrails.md)
-for the current threat model and invariants before reporting — some behaviors documented
-there are intentional trade-offs, not bugs.
+[`docs/architecture.md`](./docs/architecture.md) for the current threat model and invariants before reporting — some behaviors documented there
+are intentional trade-offs, not bugs.
 
 ## Disclosure
 
