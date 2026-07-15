@@ -7,7 +7,7 @@
 /src/services/enrollment.ts @vinnedev
 /src/routes/enrollment.ts @vinnedev
 /src/routes/integrations.ts @vinnedev
-/docs/guardrails.md @vinnedev
+/docs/architecture.md @vinnedev
 
 # CI/CD and release pipeline changes.
 /.github/ @vinnedev
