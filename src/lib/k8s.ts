@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { K8sLike } from "./k8s-port.ts";
+import { parseRows } from "./env-files.ts";
+import { stringify as yamlStringify } from "./yaml.ts";
 import { buildExecArgs } from "../services/exec.ts";
 import { aggregateNamespaces, type NamespaceCounts } from "../services/namespace-counts.ts";
 import type { Hpa } from "../services/hpa.ts";
@@ -18,6 +21,34 @@ export interface RunResult {
   code: number;
   stdout: string;
   stderr: string;
+}
+
+/**
+ * Read an env-file into ConfigMap/Secret `data`, using the same parser that wrote it.
+ *
+ * `kubectl create --from-env-file` was used here before, and it takes everything after the
+ * first `=` literally — including the quotes our serializer adds. Any value containing
+ * `=`, `#` or a quote (an LDAP DN, for example) reached the cluster wrapped in `"`, and the
+ * consumer either saw the quotes or, when it fed a JSON template, failed to parse at all.
+ * Going through parseRows keeps write and read symmetric, and also carries values that an
+ * env-file cannot represent at all, such as embedded newlines.
+ */
+async function readEnvFileData(
+  file: string,
+): Promise<{ ok: true; value: Record<string, string> } | { ok: false; result: RunResult }> {
+  let content: string;
+  try {
+    content = (await readFile(file)).toString();
+  } catch (err) {
+    return { ok: false, result: { code: 1, stdout: "", stderr: `cannot read ${file}: ${(err as Error).message}` } };
+  }
+  try {
+    const data: Record<string, string> = {};
+    for (const row of parseRows(content)) data[row.key] = row.value;
+    return { ok: true, value: data };
+  } catch (err) {
+    return { ok: false, result: { code: 1, stdout: "", stderr: `invalid env file ${file}: ${(err as Error).message}` } };
+  }
 }
 
 function which(bin: string): boolean {
@@ -101,27 +132,29 @@ export class K8s implements K8sLike {
   }
 
   async upsertSecretFromEnvFile(name: string, file: string, namespace: string): Promise<RunResult> {
-    const r = await this.kubectl([
-      "-n", namespace,
-      "create", "secret", "generic", name,
-      `--from-env-file=${file}`,
-      "--dry-run=client",
-      "-o", "yaml",
-    ]);
-    if (r.code !== 0) return r;
-    return this.kubectl(["-n", namespace, "apply", "-f", "-"], r.stdout);
+    const data = await readEnvFileData(file);
+    if (!data.ok) return data.result;
+    const manifest = yamlStringify({
+      apiVersion: "v1",
+      kind: "Secret",
+      type: "Opaque",
+      metadata: { name, namespace },
+      // stringData: the API server base64-encodes it, so we never hand-encode.
+      stringData: data.value,
+    });
+    return this.kubectl(["-n", namespace, "apply", "-f", "-"], manifest);
   }
 
   async upsertConfigMapFromEnvFile(name: string, file: string, namespace: string): Promise<RunResult> {
-    const r = await this.kubectl([
-      "-n", namespace,
-      "create", "configmap", name,
-      `--from-env-file=${file}`,
-      "--dry-run=client",
-      "-o", "yaml",
-    ]);
-    if (r.code !== 0) return r;
-    return this.kubectl(["-n", namespace, "apply", "-f", "-"], r.stdout);
+    const data = await readEnvFileData(file);
+    if (!data.ok) return data.result;
+    const manifest = yamlStringify({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { name, namespace },
+      data: data.value,
+    });
+    return this.kubectl(["-n", namespace, "apply", "-f", "-"], manifest);
   }
 
   async rolloutStatus(kind: string, name: string, namespace: string, timeoutSec: number): Promise<RunResult> {

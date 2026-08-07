@@ -9,7 +9,7 @@ import {
   type RenderedManifests,
 } from "../services/templates.ts";
 import { searchDockerHub } from "../services/dockerhub.ts";
-import { stringify as yamlStringify } from "./yaml.ts";
+import { stringify as yamlStringify } from "../lib/yaml.ts";
 import { buildImagePullSecretManifest } from "../services/registry-presets.ts";
 import * as envFiles from "../lib/env-files.ts";
 
