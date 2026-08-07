@@ -208,7 +208,11 @@ resolve_new_binary() {
         exit 1
       fi
       log "updating source at ${SRC_DIR} → ${REF}"
-      if ! git -C "${SRC_DIR}" fetch --tags --prune --depth=1 origin "${REF}" 2>&1 >/dev/null; then
+      # `2>&1 >/dev/null` would point stderr at the *current* stdout — the command
+      # substitution capturing this function — and only then silence stdout, so git's
+      # progress ended up in the returned path. Redirect stdout only; stderr already
+      # goes where the rest of the build noise goes.
+      if ! git -C "${SRC_DIR}" fetch --tags --prune --depth=1 origin "${REF}" >/dev/null; then
         err "git fetch failed for ref '${REF}' — does it exist on origin?"
         err "list remote tags with:  git -C ${SRC_DIR} ls-remote --tags origin"
         exit 1
