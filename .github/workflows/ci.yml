@@ -27,7 +27,7 @@ jobs:
       HYPER_TEST_NETWORK_BLOCK: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -73,7 +73,7 @@ jobs:
         target: [linux-x64, linux-arm64]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -95,7 +95,7 @@ jobs:
         run: sha256sum celeste-hyper-${{ matrix.target }} > celeste-hyper-${{ matrix.target }}.sha256
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: celeste-hyper-${{ matrix.target }}
           path: |
