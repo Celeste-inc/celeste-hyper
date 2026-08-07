@@ -2,7 +2,7 @@ import { Elysia } from "elysia";
 import { z } from "zod";
 import type { ApiDeps } from "./deps.ts";
 import { buildImagePullSecretManifest, type RegistryPresetId } from "../services/registry-presets.ts";
-import { stringify as yamlStringify } from "./yaml.ts";
+import { stringify as yamlStringify } from "../lib/yaml.ts";
 import { testRegistryConnection, type RegistryTestFetcher } from "../services/registry-test.ts";
 
 const PresetIds = ["ghcr", "acr", "docker-hub", "quay", "harbor", "ecr"] as const;
