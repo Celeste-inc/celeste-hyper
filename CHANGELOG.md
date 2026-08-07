@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/Celeste-inc/celeste-hyper/compare/v0.2.0...v0.2.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **deploy:** stop git fetch noise from contaminating the resolved binary path ([#13](https://github.com/Celeste-inc/celeste-hyper/issues/13)) ([bc8c50a](https://github.com/Celeste-inc/celeste-hyper/commit/bc8c50a257836cc6003f2ad99d8c899b57bf7931))
+
 ## [0.2.0](https://github.com/Celeste-inc/celeste-hyper/compare/v0.1.0...v0.2.0) (2026-08-07)
 
 
