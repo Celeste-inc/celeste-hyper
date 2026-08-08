@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/Celeste-inc/celeste-hyper/compare/v0.2.1...v0.3.0) (2026-08-08)
+
+
+### Features
+
+* **deploy:** import r2-bundle images on every cluster node ([#18](https://github.com/Celeste-inc/celeste-hyper/issues/18)) ([fb2e3c7](https://github.com/Celeste-inc/celeste-hyper/commit/fb2e3c7d14d8349c629d934ca9710159adf3732b))
+
 ## [0.2.1](https://github.com/Celeste-inc/celeste-hyper/compare/v0.2.0...v0.2.1) (2026-08-07)
 
 
