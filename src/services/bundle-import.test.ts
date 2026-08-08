@@ -41,7 +41,8 @@ function importK8s(
         calls.nodes++;
         if (opts.nodesError) return { code: 1, stdout: "", stderr: opts.nodesError };
         if (opts.nodesGarbled) return { code: 0, stdout: "not-json{", stderr: "" };
-        const items = (opts.nodes ?? []).map((n) => {
+        // default: one healthy node — the plain single-Job (pinned) path
+        const items = (opts.nodes ?? ["node-a"]).map((n) => {
           const f: NodeFixture = typeof n === "string" ? { name: n } : n;
           return {
             metadata: { name: f.name },
@@ -213,16 +214,15 @@ describe("buildBundleImportJob", () => {
     expect(cmd).toContain(K3S_CONTAINERD_SOCKET);
   });
 
-  it("pins with nodeName when given; ALWAYS tolerates control-plane taints (pinned or fallback)", () => {
+  it("pins with nodeName when given; ALWAYS tolerates every taint (image preloader, pinned or fallback)", () => {
     const j = buildBundleImportJob({ ...spec(), nodeName: "node-a" }) as any;
     expect(j.spec.template.spec.nodeName).toBe("node-a");
-    const keys = j.spec.template.spec.tolerations.map((t: any) => t.key);
-    expect(keys).toContain("node-role.kubernetes.io/control-plane");
+    // NoExecute (not-ready/unreachable/custom) would evict the pod mid-import and, with
+    // backoffLimit: 0, fail the whole deploy — the preloader must tolerate everything.
+    expect(j.spec.template.spec.tolerations).toEqual([{ operator: "Exists" }]);
     const unpinned = buildBundleImportJob(spec()) as any;
     expect(unpinned.spec.template.spec.nodeName).toBeUndefined();
-    // The fallback Job must also schedule on a tainted single-node cluster.
-    const unpinnedKeys = unpinned.spec.template.spec.tolerations.map((t: any) => t.key);
-    expect(unpinnedKeys).toContain("node-role.kubernetes.io/control-plane");
+    expect(unpinned.spec.template.spec.tolerations).toEqual([{ operator: "Exists" }]);
   });
 });
 
@@ -295,7 +295,7 @@ describe("runRemoteBundleImport", () => {
   });
 
   it("FAILS the deploy on a transient node-list error — never silently imports to one node", async () => {
-    const { k8s, calls } = importK8s({ nodesError: "dial tcp 10.0.0.1:6443: connection refused" });
+    const { k8s, calls } = importK8s({ nodesError: "dial tcp: i/o timeout" });
     const r = await runRemoteBundleImport(importArgs(k8s));
     expect(r.ok).toBe(false);
     expect(r.message).toContain("list nodes");
@@ -350,5 +350,35 @@ describe("runRemoteBundleImport (multi-node)", () => {
     expect(r.ok).toBe(false);
     expect(r.message).toContain("node-b");
     expect(calls.del).toBe(6);
+  });
+
+  it("fails FAST — no Job, no poll-budget burn — when no node is eligible (all cordoned/NotReady)", async () => {
+    const { k8s, calls } = importK8s({ nodes: [{ name: "node-a", unschedulable: true }, { name: "node-b", ready: false }] });
+    const r = await runRemoteBundleImport(importArgs(k8s));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("no Ready");
+    expect(calls.apply).toBe(0);
+    expect(calls.get).toBe(0);
+  });
+
+  it("streams per-node progress in completion order (start line + one line per imported node)", async () => {
+    const seen: string[] = [];
+    const { k8s } = importK8s({ nodes: NODES });
+    const r = await runRemoteBundleImport(importArgs(k8s, { onProgress: (m: string) => seen.push(m) }));
+    expect(r.ok).toBe(true);
+    expect(seen[0]).toContain("3 node(s)");
+    expect(seen.slice(1)).toEqual([
+      "image imported on node-a (1/3)",
+      "image imported on node-b (2/3)",
+      "image imported on node-c (3/3)",
+    ]);
+  });
+
+  it("tells the OPERATOR (not just the log) when the RBAC fallback imports to a single node", async () => {
+    const seen: string[] = [];
+    const { k8s } = importK8s({ nodesError: "nodes is forbidden" });
+    const r = await runRemoteBundleImport(importArgs(k8s, { onProgress: (m: string) => seen.push(m) }));
+    expect(r.ok).toBe(true);
+    expect(seen.some((m) => m.includes("forbidden"))).toBe(true);
   });
 });
