@@ -4,20 +4,76 @@ import { buildBundleImportJob, importJobName, runRemoteBundleImport, K3S_CONTAIN
 const OK = { code: 0, stdout: "", stderr: "" };
 const noDelay = async () => {};
 
-/** Fake K8s over the single `kubectl` seam. Routes by argv: apply / get job / delete / logs. Every
- *  call also asserts it carries a `--request-timeout` bound (the HIGH-severity fix). */
-function importK8s(opts: { applyCode?: number; succeedAfter?: number; fail?: boolean; jobLogs?: string; logsThrow?: boolean } = {}) {
-  const calls = { apply: 0, get: 0, del: 0, logs: 0, untimed: 0 };
+type NodeFixture = {
+  name: string;
+  ready?: boolean;
+  unschedulable?: boolean;
+  os?: string;
+};
+
+/** Fake K8s over the single `kubectl` seam. Routes by argv: get nodes / apply / get job / delete /
+ *  logs. Enforces real apiserver semantics where they bit us before: applying a Job name that already
+ *  exists with a different pod template is rejected ("field is immutable"). Every call also asserts it
+ *  carries a `--request-timeout` bound (the HIGH-severity fix). */
+function importK8s(
+  opts: {
+    applyCode?: number;
+    succeedAfter?: number;
+    fail?: boolean;
+    failOn?: string;
+    getCode?: number;
+    jobLogs?: string;
+    logsThrow?: boolean;
+    nodes?: (string | NodeFixture)[];
+    nodesError?: string;
+    nodesGarbled?: boolean;
+  } = {},
+) {
+  const calls = { apply: 0, get: 0, del: 0, logs: 0, nodes: 0, untimed: 0 };
+  const applies: any[] = [];
+  const live = new Map<string, string>(); // name -> serialized pod template (immutability check)
+  const deleted: string[] = [];
   let gets = 0;
   const k8s: ImportK8s = {
-    kubectl: async (args: string[]) => {
+    kubectl: async (args: string[], stdin?: string) => {
       if (!args.includes("--request-timeout=20s")) calls.untimed++;
+      if (args.includes("nodes")) {
+        calls.nodes++;
+        if (opts.nodesError) return { code: 1, stdout: "", stderr: opts.nodesError };
+        if (opts.nodesGarbled) return { code: 0, stdout: "not-json{", stderr: "" };
+        // default: one healthy node — the plain single-Job (pinned) path
+        const items = (opts.nodes ?? ["node-a"]).map((n) => {
+          const f: NodeFixture = typeof n === "string" ? { name: n } : n;
+          return {
+            metadata: { name: f.name },
+            spec: f.unschedulable ? { unschedulable: true } : {},
+            status: {
+              conditions: [{ type: "Ready", status: f.ready === false ? "False" : "True" }],
+              nodeInfo: { operatingSystem: f.os ?? "linux" },
+            },
+          };
+        });
+        return { code: 0, stdout: JSON.stringify({ items }), stderr: "" };
+      }
       if (args.includes("apply")) {
         calls.apply++;
-        return { ...OK, code: opts.applyCode ?? 0 };
+        if (opts.applyCode) return { ...OK, code: opts.applyCode };
+        const manifest = JSON.parse(stdin ?? "{}");
+        const name = manifest.metadata?.name ?? "";
+        const template = JSON.stringify(manifest.spec?.template ?? {});
+        const existing = live.get(name);
+        if (existing !== undefined && existing !== template) {
+          return { code: 1, stdout: "", stderr: `Job.batch "${name}" is invalid: spec.template: field is immutable` };
+        }
+        live.set(name, template);
+        applies.push(manifest);
+        return OK;
       }
       if (args.includes("delete")) {
         calls.del++;
+        const name = args[args.length - 1]!;
+        deleted.push(name);
+        live.delete(name);
         return OK;
       }
       if (args.includes("logs")) {
@@ -25,14 +81,18 @@ function importK8s(opts: { applyCode?: number; succeedAfter?: number; fail?: boo
         if (opts.logsThrow) throw new Error("logs unreachable");
         return { code: 0, stdout: opts.jobLogs ?? "", stderr: "" };
       }
-      // get job -o json
+      // get job -o json — the job name is the trailing `-- <name>` argument
       calls.get++;
       gets++;
-      const status = opts.fail ? { failed: 1 } : gets >= (opts.succeedAfter ?? 1) ? { succeeded: 1 } : {};
+      if (opts.getCode) return { code: opts.getCode, stdout: "", stderr: "jobs is forbidden" };
+      const name = args[args.length - 1] ?? "";
+      if (!live.has(name)) return { code: 1, stdout: "", stderr: `jobs.batch "${name}" not found` };
+      const failed = opts.fail || (opts.failOn !== undefined && name.includes(opts.failOn));
+      const status = failed ? { failed: 1 } : gets >= (opts.succeedAfter ?? 1) ? { succeeded: 1 } : {};
       return { code: 0, stdout: JSON.stringify({ status }), stderr: "" };
     },
   };
-  return { k8s, calls };
+  return { k8s, calls, applies, deleted };
 }
 
 const importArgs = (k8s: ImportK8s, over = {}) => ({
@@ -68,6 +128,18 @@ describe("importJobName", () => {
     expect(n).not.toContain("/");
     expect(n).not.toContain("_");
   });
+
+  it("gives distinct nodes distinct names even when slugs would collide (dots vs dashes, truncation)", () => {
+    // `node.a` and `node-a` slug to the same string — the segment must stay injective.
+    expect(importJobName("pay", "v1", "node.a")).not.toBe(importJobName("pay", "v1", "node-a"));
+    const long = ["node-" + "a".repeat(60) + "x", "node-" + "a".repeat(60) + "y"];
+    const names = long.map((n) => importJobName("some-service-name", "release/2026.08.08", n));
+    expect(new Set(names).size).toBe(2);
+    for (const n of names) {
+      expect(n.length).toBeLessThanOrEqual(63);
+      expect(n).toMatch(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/);
+    }
+  });
 });
 
 describe("buildBundleImportJob", () => {
@@ -93,6 +165,12 @@ describe("buildBundleImportJob", () => {
     expect(job.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     expect(job.spec.template.spec.restartPolicy).toBe("Never");
     expect(job.spec.template.spec.automountServiceAccountToken).toBe(false);
+  });
+
+  it("names a node-pinned Job with the SAME node the caller polls (metadata.name carries the node)", () => {
+    const j = buildBundleImportJob({ ...spec(), nodeName: "node-a" }) as any;
+    expect(j.metadata.name).toBe(importJobName("pay", "v1.2.3", "node-a"));
+    expect(j.metadata.name).not.toBe(importJobName("pay", "v1.2.3"));
   });
 
   it("mounts the node containerd socket (Socket), the node's k3s binary (File), and a scratch emptyDir", () => {
@@ -134,6 +212,17 @@ describe("buildBundleImportJob", () => {
     expect(cmd).toContain("import");
     expect(cmd).toContain("k8s.io");
     expect(cmd).toContain(K3S_CONTAINERD_SOCKET);
+  });
+
+  it("pins with nodeName when given; ALWAYS tolerates every taint (image preloader, pinned or fallback)", () => {
+    const j = buildBundleImportJob({ ...spec(), nodeName: "node-a" }) as any;
+    expect(j.spec.template.spec.nodeName).toBe("node-a");
+    // NoExecute (not-ready/unreachable/custom) would evict the pod mid-import and, with
+    // backoffLimit: 0, fail the whole deploy — the preloader must tolerate everything.
+    expect(j.spec.template.spec.tolerations).toEqual([{ operator: "Exists" }]);
+    const unpinned = buildBundleImportJob(spec()) as any;
+    expect(unpinned.spec.template.spec.nodeName).toBeUndefined();
+    expect(unpinned.spec.template.spec.tolerations).toEqual([{ operator: "Exists" }]);
   });
 });
 
@@ -178,5 +267,118 @@ describe("runRemoteBundleImport", () => {
     expect(r.ok).toBe(false);
     expect(r.message).toContain("did not complete");
     expect(calls.del).toBe(2);
+  });
+
+  it("stops polling early when the wall-clock budget is exhausted (tick cost grows with node count)", async () => {
+    let t = 0;
+    const { k8s } = importK8s({ succeedAfter: 999 });
+    const r = await runRemoteBundleImport(
+      importArgs(k8s, { pollTicks: 9999, deadlineSec: 1, now: () => (t += 40_000) }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("did not complete");
+  });
+
+  it("fails fast when a Job's status reads keep failing (lost/reaped Job, revoked RBAC)", async () => {
+    const { k8s } = importK8s({ getCode: 1 });
+    const r = await runRemoteBundleImport(importArgs(k8s, { pollTicks: 50 }));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("unreadable");
+  });
+
+  it("falls back to a single unpinned Job ONLY when node-listing is RBAC-forbidden", async () => {
+    const { k8s, calls, applies } = importK8s({ nodesError: 'nodes is forbidden: User "x" cannot list resource "nodes"' });
+    const r = await runRemoteBundleImport(importArgs(k8s));
+    expect(r.ok).toBe(true);
+    expect(calls.apply).toBe(1);
+    expect(applies[0].spec.template.spec.nodeName).toBeUndefined();
+  });
+
+  it("FAILS the deploy on a transient node-list error — never silently imports to one node", async () => {
+    const { k8s, calls } = importK8s({ nodesError: "dial tcp: i/o timeout" });
+    const r = await runRemoteBundleImport(importArgs(k8s));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("list nodes");
+    expect(calls.apply).toBe(0);
+  });
+
+  it("FAILS the deploy when the node list comes back garbled", async () => {
+    const { k8s, calls } = importK8s({ nodesGarbled: true });
+    const r = await runRemoteBundleImport(importArgs(k8s));
+    expect(r.ok).toBe(false);
+    expect(calls.apply).toBe(0);
+  });
+});
+
+describe("runRemoteBundleImport (multi-node)", () => {
+  const NODES = ["node-a", "node-b", "node-c"];
+
+  it("applies one nodeName-pinned Job per Ready node and succeeds only when ALL complete", async () => {
+    const { k8s, calls, applies, deleted } = importK8s({ nodes: NODES });
+    const r = await runRemoteBundleImport(importArgs(k8s));
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain("3 node(s)");
+    expect(calls.apply).toBe(3);
+    const pinned = applies.map((j) => j.spec.template.spec.nodeName).sort();
+    expect(pinned).toEqual(NODES);
+    // Identity contract: every manifest gets its own name, and teardown targets exactly those names.
+    const names = applies.map((j) => j.metadata.name);
+    expect(new Set(names).size).toBe(3);
+    expect([...new Set(deleted)].sort()).toEqual([...names].sort());
+    // pre-apply clean slate + finally teardown, per Job
+    expect(calls.del).toBe(6);
+    expect(calls.untimed).toBe(0);
+  });
+
+  it("skips unschedulable, NotReady and non-Linux nodes", async () => {
+    const { k8s, applies } = importK8s({
+      nodes: [
+        "node-a",
+        { name: "node-b", unschedulable: true },
+        { name: "node-c", ready: false },
+        { name: "node-d", os: "windows" },
+      ],
+    });
+    const r = await runRemoteBundleImport(importArgs(k8s));
+    expect(r.ok).toBe(true);
+    expect(applies.map((j) => j.spec.template.spec.nodeName)).toEqual(["node-a"]);
+  });
+
+  it("fails the whole import — and tears every Job down — when ANY node's Job fails", async () => {
+    const { k8s, calls } = importK8s({ nodes: NODES, failOn: importJobName("pay", "v1", "node-b") });
+    const r = await runRemoteBundleImport(importArgs(k8s));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("node-b");
+    expect(calls.del).toBe(6);
+  });
+
+  it("fails FAST — no Job, no poll-budget burn — when no node is eligible (all cordoned/NotReady)", async () => {
+    const { k8s, calls } = importK8s({ nodes: [{ name: "node-a", unschedulable: true }, { name: "node-b", ready: false }] });
+    const r = await runRemoteBundleImport(importArgs(k8s));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("no Ready");
+    expect(calls.apply).toBe(0);
+    expect(calls.get).toBe(0);
+  });
+
+  it("streams per-node progress in completion order (start line + one line per imported node)", async () => {
+    const seen: string[] = [];
+    const { k8s } = importK8s({ nodes: NODES });
+    const r = await runRemoteBundleImport(importArgs(k8s, { onProgress: (m: string) => seen.push(m) }));
+    expect(r.ok).toBe(true);
+    expect(seen[0]).toContain("3 node(s)");
+    expect(seen.slice(1)).toEqual([
+      "image imported on node-a (1/3)",
+      "image imported on node-b (2/3)",
+      "image imported on node-c (3/3)",
+    ]);
+  });
+
+  it("tells the OPERATOR (not just the log) when the RBAC fallback imports to a single node", async () => {
+    const seen: string[] = [];
+    const { k8s } = importK8s({ nodesError: "nodes is forbidden" });
+    const r = await runRemoteBundleImport(importArgs(k8s, { onProgress: (m: string) => seen.push(m) }));
+    expect(r.ok).toBe(true);
+    expect(seen.some((m) => m.includes("forbidden"))).toBe(true);
   });
 });

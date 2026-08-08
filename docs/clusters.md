@@ -232,11 +232,18 @@ sequenceDiagram
   file is written `0600` under `clustersDir` (default `/etc/celeste-hyper/clusters`) via an exclusive
   temp file + atomic rename. A cluster-id collision is refused (409) and never overwrites.
 - **`imageLoad`** — enrolled clusters default to `remote-pull` (see [`sources.md`](./sources.md) and
-  the architecture doc): the *worker's* node loads r2-bundle images itself via a one-shot privileged
-  in-cluster import Job, so a bundle deployed from the master lands on the remote machine. `local`
+  the architecture doc): the *worker's* nodes load r2-bundle images themselves via one-shot privileged
+  in-cluster import Jobs — one `nodeName`-pinned Job per Ready+schedulable node, because a containerd
+  image store is node-local — so a bundle deployed from the master lands on **every** node and the
+  bundle's `imagePullPolicy: Never` pods can schedule (and scale) anywhere in the cluster. The
+  per-node path requires cluster-scoped `list nodes` on the kubeconfig (the k3s admin default has it);
+  when node-listing is RBAC-forbidden, a single unpinned Job is used instead — on a multi-node
+  cluster that means only one node receives the image. Any *other* node-list failure (timeout,
+  partition) fails the deploy rather than silently importing to a single node. `local`
   (the default for manually-registered clusters) means hyper runs on the node and imports with
-  `ctr` locally — only correct when the master *is* the node. A manually-registered remote cluster can
-  opt into remote-pull with `PATCH /api/clusters/:id { "imageLoad": "remote-pull" }`.
+  `ctr` locally — only correct when the master *is* the node **and** the cluster has a single node; a
+  multi-node cluster should use `remote-pull` even when hyper runs on one of its nodes. A
+  manually-registered cluster can opt in with `PATCH /api/clusters/:id { "imageLoad": "remote-pull" }`.
 
 Security posture: enrollment moves a kubeconfig (full cluster authority) over HTTP, so it is gated
 exactly like the other RCE-equivalent surfaces in hyper (exec WS, webhook receiver) — admin-minted

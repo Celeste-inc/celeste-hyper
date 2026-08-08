@@ -12,6 +12,17 @@
 // with the node's containerd) rather than a ~250 MB `rancher/k3s` image pull — the container image is
 // only a tiny TLS-capable fetcher. The node pulls the bundle itself ("the R2 files land on the other
 // machine") and no registry credentials ever touch the cluster.
+//
+// Multi-node clusters get one Job PER Ready+schedulable Linux node (`spec.nodeName`-pinned), because a
+// containerd image store is node-local: importing on a single arbitrary node would leave every other
+// node unable to run the bundle's `imagePullPolicy: Never` pods (ImagePullBackOff on scale-out or
+// reschedule). Listing nodes needs cluster-scoped RBAC (`list nodes`); when the kubeconfig is
+// forbidden from that, we fall back to the original single unpinned Job — identical to the
+// pre-multi-node behavior. Any OTHER node-list failure (timeout, partition) fails the deploy instead
+// of silently importing to a single node.
+
+import { createHash } from "node:crypto";
+import { log } from "../lib/logger.ts";
 
 /** Default k3s containerd socket. Vanilla containerd is `/run/containerd/containerd.sock`; k3s is the
  *  enrolled-worker default, so it is the builder default (overridable per call). */
@@ -24,6 +35,12 @@ const DEFAULT_FETCH_IMAGE = "curlimages/curl:8.11.1";
 export const DEFAULT_DEADLINE_SEC = 600;
 const TTL_AFTER_FINISHED_SEC = 300;
 const DEFAULT_POLL_TICK_MS = 2000;
+// Concurrent kubectl child processes per fan-out (delete / per-tick polling). Keeps a large cluster
+// from spawning N simultaneous processes on the master host.
+const MAX_KUBECTL_CONCURRENCY = 8;
+// A Job whose status read fails this many ticks IN A ROW is treated as lost (RBAC revoked mid-flight,
+// TTL-reaped, deleted out-of-band) — fail fast instead of burning the whole poll budget.
+const MAX_CONSECUTIVE_POLL_ERRORS = 5;
 
 export interface BundleImportSpec {
   service: string;
@@ -36,17 +53,40 @@ export interface BundleImportSpec {
   k3sBinaryPath?: string;
   fetchImage?: string;
   deadlineSec?: number;
+  /** Pin the Job's pod to this node (`spec.nodeName` — bypasses the scheduler). Unset = unpinned. */
+  nodeName?: string;
 }
 
-/** Deterministic, RFC-1123-safe (≤63 char) Job name for a service+tag import. */
 /** Lowercase to `[a-z0-9-]`, collapsing runs and trimming dashes — safe for a k8s name/label segment. */
 function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-export function importJobName(service: string, tag: string): string {
-  const base = `celeste-import-${slug(service)}-${slug(tag)}`.slice(0, 62);
-  return base.replace(/-+$/g, "") || "celeste-import";
+/** Node segment for a per-node Job name. A name passes through verbatim only when slugging changed
+ *  nothing, it fits the length budget, AND it does not look like a hashed segment — so the verbatim
+ *  and hashed namespaces are disjoint; everything else gets a stable prefix + 6-hex content hash
+ *  (collision-resistant; the orchestrator additionally fails loudly on any duplicate Job name). */
+function nodeSegment(node: string): string {
+  const s = slug(node);
+  if (s.length <= 17 && s === node && !/-[0-9a-f]{6}$/.test(s)) return s;
+  const h = createHash("sha256").update(node).digest("hex").slice(0, 6);
+  return `${s.slice(0, 17)}-${h}`;
+}
+
+/** Human-readable list capped for status/progress strings (a large cluster must not push a multi-KB
+ *  node list into the deployments row on every SSE tick). */
+function capList(items: string[], max = 5): string {
+  if (items.length <= max) return items.join(", ");
+  return `${items.slice(0, max).join(", ")} … and ${items.length - max} more`;
+}
+
+/** Deterministic, RFC-1123-safe (≤63 char) Job name for a service+tag (+optional node) import. */
+export function importJobName(service: string, tag: string, node?: string): string {
+  const seg = node ? nodeSegment(node) : "";
+  const budget = 62 - (seg ? seg.length + 1 : 0);
+  const base = `celeste-import-${slug(service)}-${slug(tag)}`.slice(0, budget).replace(/-+$/g, "");
+  const full = seg ? `${base}-${seg}` : base;
+  return full.replace(/^-+|-+$/g, "") || "celeste-import";
 }
 
 /** A valid (≤63-char, dash-trimmed) label value for a service name. */
@@ -77,6 +117,25 @@ export interface RemoteImportArgs {
   socketPath?: string;
   /** Job wall-clock budget; also drives the default poll-tick budget (single source of truth). */
   deadlineSec?: number;
+  /** Injected clock for the wall-clock poll bound (tests pin it; default `Date.now`). */
+  now?: () => number;
+  /** Live progress line for the deploy status stream (per-node import completions). */
+  onProgress?: (message: string) => void;
+}
+
+/** Map with bounded concurrency — each fn spawns a kubectl child process, so an unbounded
+ *  `Promise.all` over a large node list would fork N processes at once on the master host. */
+async function mapBounded<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 /** Best-effort delete of the import Job (idempotent, bounded). Never throws. */
@@ -95,51 +154,179 @@ async function captureJobLogs(k8s: ImportK8s, name: string, namespace: string): 
   }
 }
 
-/** Apply the import Job to the (remote) cluster, poll it to completion, and always tear it down.
- *  Pure orchestration over the injected K8s + delay — unit-tested with fakes. Every apiserver call is
- *  timeout-bounded (`REQ_TIMEOUT`) so a partitioned remote node can't hang the deploy worker. */
-export async function runRemoteBundleImport(args: RemoteImportArgs): Promise<{ ok: boolean; message: string }> {
-  const { k8s, presignedUrl, service, namespace, tag, delay } = args;
-  const name = importJobName(service, tag);
-  const deadlineSec = args.deadlineSec ?? DEFAULT_DEADLINE_SEC;
-  const job = buildBundleImportJob({ service, namespace, tag, tarUrl: presignedUrl, socketPath: args.socketPath, deadlineSec });
-  // A Job's pod template is immutable, so a leftover Job from a crashed/retried attempt would make
-  // `apply` fail. Delete any prior instance first (idempotent) so retries are clean.
-  await deleteJob(k8s, name, namespace);
-  const applied = await k8s.kubectl(["-n", namespace, "apply", "-f", "-", REQ_TIMEOUT], JSON.stringify(job));
-  if (applied.code !== 0) {
-    // The create may have raced (accepted server-side, error on the client read), so tear down before
-    // returning — never leave an unmonitored privileged Job behind.
-    await deleteJob(k8s, name, namespace);
-    return { ok: false, message: `apply import job: ${(applied.stderr || applied.stdout).trim().slice(0, 200)}` };
+interface RawNodeList {
+  items?: {
+    metadata?: { name?: string };
+    spec?: { unschedulable?: boolean };
+    status?: {
+      conditions?: { type?: string; status?: string }[];
+      nodeInfo?: { operatingSystem?: string };
+    };
+  }[];
+}
+
+type NodeListResult = { ok: true; nodes: string[] } | { ok: false; forbidden: boolean; message: string };
+
+/** Names of every Ready, schedulable Linux node — each must receive the image (containerd stores are
+ *  node-local). Distinguishes "forbidden" (namespace-scoped RBAC — caller falls back to the original
+ *  single unpinned Job) from transient failures (timeout, partition, garbled read — caller must fail
+ *  the deploy rather than silently import to one node). Never throws. */
+async function listImportNodes(k8s: ImportK8s): Promise<NodeListResult> {
+  let r: { code: number; stdout: string; stderr: string };
+  try {
+    r = await k8s.kubectl(["get", "nodes", "-o", "json", REQ_TIMEOUT]);
+  } catch (e) {
+    return { ok: false, forbidden: false, message: (e as Error).message.slice(0, 200) };
+  }
+  if (r.code !== 0) {
+    const stderr = (r.stderr || r.stdout).trim();
+    const forbidden = /forbidden|cannot list resource "nodes"|unauthorized/i.test(stderr);
+    return { ok: false, forbidden, message: stderr.slice(0, 200) };
   }
   try {
+    const parsed = JSON.parse(r.stdout) as RawNodeList;
+    const nodes = (parsed.items ?? [])
+      .filter((n) => n.metadata?.name && n.spec?.unschedulable !== true)
+      .filter((n) => (n.status?.conditions ?? []).some((c) => c.type === "Ready" && c.status === "True"))
+      // hostPath k3s binary + containerd socket only exist on Linux nodes; absent nodeInfo = include
+      // (k3s always reports it; only an explicit non-linux OS is excluded).
+      .filter((n) => (n.status?.nodeInfo?.operatingSystem ?? "linux") === "linux")
+      .map((n) => n.metadata!.name!)
+      .sort();
+    return { ok: true, nodes };
+  } catch {
+    return { ok: false, forbidden: false, message: "node list returned non-JSON output" };
+  }
+}
+
+/** Apply one import Job per Ready+schedulable node (single unpinned Job when node-listing is
+ *  RBAC-forbidden), poll all of them to completion, and always tear every one down. The image must
+ *  land on EVERY node — one failure fails the deploy, because a node without the image cannot run the
+ *  bundle's `imagePullPolicy: Never` pods. Pure orchestration over the injected K8s + delay —
+ *  unit-tested with fakes. Every apiserver call is timeout-bounded (`REQ_TIMEOUT`) so a partitioned
+ *  remote node can't hang the deploy worker. */
+export async function runRemoteBundleImport(args: RemoteImportArgs): Promise<{ ok: boolean; message: string }> {
+  const { k8s, presignedUrl, service, namespace, tag, delay } = args;
+  const deadlineSec = args.deadlineSec ?? DEFAULT_DEADLINE_SEC;
+  const now = args.now ?? (() => Date.now());
+  const listed = await listImportNodes(k8s);
+  if (!listed.ok && !listed.forbidden) {
+    log.warn("bundle-import.node-list-failed", { service, tag, message: listed.message });
+    return { ok: false, message: `list nodes: ${listed.message}` };
+  }
+  if (listed.ok && listed.nodes.length === 0) {
+    // A successful list with nothing eligible (all cordoned / NotReady / non-Linux) can never run an
+    // unpinned Job either — fail fast with the real reason instead of burning the full poll budget.
+    return { ok: false, message: "no Ready, schedulable Linux node available for image import" };
+  }
+  const progress = args.onProgress ?? (() => {});
+  if (!listed.ok) {
+    // RBAC-forbidden fallback: keep the pre-multi-node single-Job behavior, but say so where the
+    // operator can see it — on a multi-node cluster only ONE node will receive the image.
+    log.warn("bundle-import.node-list-forbidden", { service, tag, message: listed.message });
+    progress("node listing forbidden — importing on a single node only");
+  }
+  const nodes = listed.ok ? listed.nodes : [];
+  const targets: { name: string; node?: string }[] =
+    nodes.length > 0
+      ? nodes.map((node) => ({ name: importJobName(service, tag, node), node }))
+      : [{ name: importJobName(service, tag) }];
+  if (new Set(targets.map((t) => t.name)).size !== targets.length) {
+    return { ok: false, message: `internal: duplicate import Job names for nodes [${capList(nodes)}]` };
+  }
+  log.info("bundle-import.start", { service, tag, jobs: targets.length, pinned: nodes.length > 0 });
+  progress(
+    nodes.length > 0
+      ? `importing image on ${targets.length} node(s): ${capList(nodes)}`
+      : "importing image via in-cluster Job",
+  );
+  const teardownAll = async () => {
+    await mapBounded(targets, MAX_KUBECTL_CONCURRENCY, (t) => deleteJob(k8s, t.name, namespace));
+  };
+  // A kubectl call can REJECT (spawn ENOENT/EMFILE), not just return a non-zero code — normalize so
+  // no throw can escape the apply/poll phases and bypass the teardown-in-finally guarantee.
+  const kubectlSafe = async (kargs: string[], stdin?: string) =>
+    k8s.kubectl(kargs, stdin).catch((e) => ({ code: 1, stdout: "", stderr: (e as Error).message }));
+  // A Job's pod template is immutable, so a leftover Job from a crashed/retried attempt would make
+  // `apply` fail. Delete any prior instance first (idempotent) so retries are clean.
+  await teardownAll();
+  // Wall-clock budget covers the applies too — N applies at up to REQ_TIMEOUT each are not free.
+  const budgetMs = (deadlineSec + 60) * 1000;
+  const startedAt = now();
+  try {
+    const applied = await mapBounded(targets, MAX_KUBECTL_CONCURRENCY, async (t) => {
+      const job = buildBundleImportJob({
+        service,
+        namespace,
+        tag,
+        tarUrl: presignedUrl,
+        socketPath: args.socketPath,
+        deadlineSec,
+        nodeName: t.node,
+      });
+      return { t, r: await kubectlSafe(["-n", namespace, "apply", "-f", "-", REQ_TIMEOUT], JSON.stringify(job)) };
+    });
+    const badApply = applied.find((a) => a.r.code !== 0);
+    if (badApply) {
+      // The create may have raced (accepted server-side, error on the client read) — the finally
+      // teardown removes every target, so no unmonitored privileged Job is left behind.
+      const where = badApply.t.node ? ` (node ${badApply.t.node})` : "";
+      return { ok: false, message: `apply import job${where}: ${(badApply.r.stderr || badApply.r.stdout).trim().slice(0, 200)}` };
+    }
     const tickMs = args.tickMs ?? DEFAULT_POLL_TICK_MS;
     // Poll PAST the Job's own activeDeadlineSeconds (+60s margin) so a slow-but-valid import is
     // observed as the Job's DeadlineExceeded (status.failed), never abandoned + torn down early.
-    const ticks = args.pollTicks ?? Math.ceil(((deadlineSec + 60) * 1000) / tickMs);
-    for (let i = 0; i < ticks; i++) {
-      const r = await k8s.kubectl(["-n", namespace, "get", "job", "-o", "json", REQ_TIMEOUT, "--", name]);
-      if (r.code === 0) {
+    // Bounded BOTH by tick count and wall clock: per-tick cost grows with node count (N kubectl
+    // reads), so a fixed tick count alone would overrun the intended budget on large clusters.
+    const ticks = args.pollTicks ?? Math.ceil(budgetMs / tickMs);
+    const pending = new Map(targets.map((t) => [t.name, { node: t.node, errors: 0 }]));
+    for (let i = 0; i < ticks && now() - startedAt <= budgetMs; i++) {
+      const snapshot = [...pending.entries()];
+      const reads = await mapBounded(snapshot, MAX_KUBECTL_CONCURRENCY, async ([name]) =>
+        kubectlSafe(["-n", namespace, "get", "job", "-o", "json", REQ_TIMEOUT, "--", name]),
+      );
+      for (let j = 0; j < snapshot.length; j++) {
+        const [name, meta] = snapshot[j]!;
+        const r = reads[j]!;
+        if (r.code !== 0) {
+          // Transient apiserver hiccups are tolerated, but a Job whose reads fail persistently is
+          // lost (RBAC revoked, TTL-reaped, deleted out-of-band) — waiting out the budget helps nobody.
+          if (++meta.errors >= MAX_CONSECUTIVE_POLL_ERRORS) {
+            return { ok: false, message: `import Job/${name} unreadable after ${MAX_CONSECUTIVE_POLL_ERRORS} attempts: ${(r.stderr || r.stdout).trim().slice(0, 200)}` };
+          }
+          continue;
+        }
+        meta.errors = 0;
         let status: { succeeded?: number; failed?: number } = {};
         try {
           status = (JSON.parse(r.stdout) as { status?: typeof status }).status ?? {};
         } catch {
           // a transient non-JSON read — keep polling
         }
-        if ((status.succeeded ?? 0) >= 1) return { ok: true, message: `imported on the node via Job/${name}` };
+        if ((status.succeeded ?? 0) >= 1) {
+          log.info("bundle-import.node-done", { service, tag, node: meta.node ?? null });
+          pending.delete(name);
+          if (meta.node) progress(`image imported on ${meta.node} (${targets.length - pending.size}/${targets.length})`);
+          continue;
+        }
         if ((status.failed ?? 0) >= 1) {
           // Capture the pod's logs BEFORE the finally block tears the Job down (else the operator sees
           // only "failed" with no cause).
           const tail = await captureJobLogs(k8s, name, namespace);
-          return { ok: false, message: `import Job/${name} failed on the node${tail ? `: ${tail}` : ""}` };
+          const where = meta.node ? `node ${meta.node}` : "the node";
+          return { ok: false, message: `import Job/${name} failed on ${where}${tail ? `: ${tail}` : ""}` };
         }
+      }
+      if (pending.size === 0) {
+        return targets[0]?.node
+          ? { ok: true, message: `imported on ${targets.length} node(s): ${capList(targets.map((t) => t.node!))}` }
+          : { ok: true, message: `imported on the node via Job/${targets[0]!.name}` };
       }
       await delay(tickMs);
     }
-    return { ok: false, message: `import Job/${name} did not complete in time` };
+    return { ok: false, message: `import Job(s) [${capList([...pending.keys()])}] did not complete in time` };
   } finally {
-    await deleteJob(k8s, name, namespace);
+    await teardownAll();
   }
 }
 
@@ -149,7 +336,7 @@ export async function runRemoteBundleImport(args: RemoteImportArgs): Promise<{ o
 export function buildBundleImportJob(spec: BundleImportSpec): object {
   const socket = spec.socketPath ?? K3S_CONTAINERD_SOCKET;
   const k3sBin = spec.k3sBinaryPath ?? K3S_HOST_BINARY;
-  const name = importJobName(spec.service, spec.tag);
+  const name = importJobName(spec.service, spec.tag, spec.nodeName);
   const tarPath = "/work/image.tar";
   return {
     apiVersion: "batch/v1",
@@ -172,6 +359,12 @@ export function buildBundleImportJob(spec: BundleImportSpec): object {
         spec: {
           restartPolicy: "Never",
           automountServiceAccountToken: false,
+          // `nodeName` bypasses the scheduler (NoSchedule taints don't apply), but NoExecute taints —
+          // including the auto-applied not-ready/unreachable ones on a flapping node, or any custom
+          // one — would evict the pod mid-import and fail the whole deploy (backoffLimit: 0). This is
+          // an image PRELOADER, DaemonSet-shaped by nature: tolerate everything, pinned or fallback.
+          ...(spec.nodeName ? { nodeName: spec.nodeName } : {}),
+          tolerations: [{ operator: "Exists" }],
           volumes: [
             { name: "containerd-sock", hostPath: { path: socket, type: "Socket" } },
             // The node's own k3s binary supplies `ctr` — exact version match, no 250 MB image pull.

@@ -264,6 +264,9 @@ export class Deployer {
         namespace: service.namespace,
         tag,
         delay: (ms) => this.delay(ms),
+        // Per-node import completions surface live in the deploy status stream (SSE re-emits on
+        // every message change), so a multi-node import is trackable while it runs.
+        onProgress: (m) => this.state.updateDeployment(id, "loading", m),
       });
       if (!imp.ok) return fail("image-import", imp.message);
       ok("image-import", imp.message);

@@ -8,8 +8,10 @@ export const ClusterRuntimeSchema = z.enum(["auto", "k3s", "docker", "containerd
 // How an r2-bundle image tar reaches the target node's container runtime (P4.3):
 //   - local       — `ctr import` on the hyper host. Correct ONLY when hyper runs ON the node
 //                    (single-host bootstrap install, the compose demo). Default for back-compat.
-//   - remote-pull — the node loads the image itself via an in-cluster import Job. Required when the
-//                    cluster is a *remote* machine (e.g. an enrolled worker). registry-pull is
+//   - remote-pull — the nodes load the image themselves via in-cluster import Jobs, one per
+//                    Ready+schedulable node (containerd stores are node-local). Required when the
+//                    cluster is a *remote* machine (e.g. an enrolled worker) and for multi-node
+//                    clusters where pods must be schedulable on any node. registry-pull is
 //                    unaffected by this knob (the node always pulls registry images itself).
 export const ImageLoadSchema = z.enum(["local", "remote-pull"]);
 export type ImageLoad = z.infer<typeof ImageLoadSchema>;
