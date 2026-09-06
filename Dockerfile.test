@@ -8,7 +8,7 @@
 #
 # The build runs `bun run check` (typecheck + bun test + frontend typecheck + Vitest + frontend
 # build); a non-zero result fails the image build, so a green build == a green gate on Linux.
-FROM oven/bun:1.3.14
+FROM oven/bun:1.4.0
 
 ENV TZ=UTC \
     CI=1 \

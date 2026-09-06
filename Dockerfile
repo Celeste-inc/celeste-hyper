@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ── stage 1: build the Vite frontend ────────────────────────────────────
-FROM oven/bun:1.3.14-alpine AS frontend
+FROM oven/bun:1.4.0-alpine AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/bun.lock ./
 RUN bun install --frozen-lockfile
@@ -9,7 +9,7 @@ COPY frontend/ ./
 RUN bun run build && ls dist | head
 
 # ── stage 2: runtime image with kubectl, bun, embedded UI ───────────────
-FROM oven/bun:1.3.14-alpine
+FROM oven/bun:1.4.0-alpine
 
 RUN apk add --no-cache curl ca-certificates bash && \
     KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)" && \
