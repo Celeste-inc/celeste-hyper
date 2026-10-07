@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crossKindDuplicates, digestValues, evaluateDrift, loadDigestKey, readLiveEnv } from "./env-guard.ts";
@@ -77,6 +77,12 @@ describe("loadDigestKey", () => {
     expect(second.equals(first)).toBe(true);
     expect(readFileSync(join(dir, "env-digest.key"), "utf8")).toMatch(/^[0-9a-f]{64}$/);
     expect(statSync(join(dir, "env-digest.key")).mode & 0o777).toBe(0o600);
+  });
+
+  it("rejects a corrupted key file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hyper-digest-"));
+    writeFileSync(join(dir, "env-digest.key"), "abc");
+    expect(() => loadDigestKey(dir)).toThrow("32 hex-encoded bytes");
   });
 });
 

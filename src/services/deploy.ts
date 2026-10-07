@@ -164,7 +164,8 @@ export class Deployer {
     namespace: string,
     k8s: K8sLike,
     allowEnvDrift = false,
-  ): Promise<{ steps: DeployStep[]; warnings: string[]; digests?: Record<EnvKind, EnvDigests>; error?: { name: string; message: string } }> {
+    deploymentId = 0,
+  ): Promise<{ steps: DeployStep[]; warnings: string[]; error?: { name: string; message: string } }> {
     const steps: DeployStep[] = [];
     const warnings: string[] = [];
     const kinds: { kind: EnvKind; resource: string }[] = [
@@ -190,31 +191,15 @@ export class Deployer {
     const mode = this.cfg.envGuard ?? "off";
     let digests: Record<EnvKind, EnvDigests> | undefined;
     if (mode !== "off") {
-      const duplicates = crossKindDuplicates(values.config, values.secret);
-      if (duplicates.length) {
-        const message = `keys defined in both config.env and secret.env: ${duplicates.join(", ")}`;
-        if (mode === "block") return { steps, warnings, error: { name: "env-duplicate-keys", message } };
+      try {
+        const guard = await this.guardEnv(service, namespace, k8s, kinds, values, mode, allowEnvDrift);
+        for (const w of guard.warnings) warnings.push(w);
+        if (guard.error) return { steps, warnings, error: guard.error };
+        digests = guard.digests;
+      } catch (e) {
+        const message = `env guard failed: ${(e as Error).message}`;
+        if (mode === "block") return { steps, warnings, error: { name: "env-guard", message } };
         warnings.push(`[warn] ${message}`);
-      }
-      const digestKey = loadDigestKey(this.cfg.stateDir);
-      digests = { config: {}, secret: {} };
-      for (const { kind, resource } of kinds) {
-        digests[kind] = digestValues(digestKey, service.name, kind, values[kind]);
-        const live = await readLiveEnv(k8s, kind, resource, namespace);
-        if (!live.ok) {
-          const message = `${kind}: cannot read live ${resource}: ${live.message}`;
-          if (mode === "block" && !allowEnvDrift) return { steps, warnings, error: { name: "env-drift", message } };
-          warnings.push(`[warn] env drift check skipped ${message}`);
-          continue;
-        }
-        const liveDigests = live.values ? digestValues(digestKey, service.name, kind, live.values) : null;
-        const report = evaluateDrift(digests[kind], liveDigests, this.state.getEnvBaseline(service.name, kind));
-        for (const w of report.warnings) warnings.push(`[warn] ${kind}: ${w}`);
-        if (report.blocked.length) {
-          const message = `${kind}: changed in the cluster outside hyper and would be reverted: ${report.blocked.join(", ")}`;
-          if (mode === "block" && !allowEnvDrift) return { steps, warnings, error: { name: "env-drift", message } };
-          warnings.push(`[warn] env drift ${allowEnvDrift ? "overridden" : "detected"} ${message}`);
-        }
       }
     }
 
@@ -225,14 +210,55 @@ export class Deployer {
         : await k8s.upsertSecretFromEnvFile(resource, file, namespace);
       if (r.code !== 0) return { steps, warnings, error: { name: `apply-${kind}`, message: r.stderr || r.stdout } };
       steps.push({ name: `apply-${kind}`, ok: true, message: autoCreated.has(kind) ? `${file} (auto-created empty)` : file });
+      if (digests) this.recordEnvBaseline(service.name, kind, digests[kind], deploymentId, warnings);
     }
-    return { steps, warnings, digests };
+    return { steps, warnings };
   }
 
-  private recordEnvBaseline(service: string, digests: Record<EnvKind, EnvDigests> | undefined, deploymentId: number): void {
-    if (!digests) return;
-    this.state.setEnvBaseline(service, "config", digests.config, deploymentId);
-    this.state.setEnvBaseline(service, "secret", digests.secret, deploymentId);
+  private async guardEnv(
+    service: ServiceModel,
+    namespace: string,
+    k8s: K8sLike,
+    kinds: { kind: EnvKind; resource: string }[],
+    values: Record<EnvKind, EnvValues>,
+    mode: "warn" | "block",
+    allowEnvDrift: boolean,
+  ): Promise<{ warnings: string[]; digests: Record<EnvKind, EnvDigests>; error?: { name: string; message: string } }> {
+    const warnings: string[] = [];
+    const digests: Record<EnvKind, EnvDigests> = { config: {}, secret: {} };
+    const duplicates = crossKindDuplicates(values.config, values.secret);
+    if (duplicates.length) {
+      const message = `keys defined in both config.env and secret.env: ${duplicates.join(", ")}`;
+      if (mode === "block") return { warnings, digests, error: { name: "env-duplicate-keys", message } };
+      warnings.push(`[warn] ${message}`);
+    }
+    const digestKey = loadDigestKey(this.cfg.stateDir);
+    for (const { kind, resource } of kinds) {
+      digests[kind] = digestValues(digestKey, service.name, kind, values[kind]);
+      const live = await readLiveEnv(k8s, kind, resource, namespace);
+      if (!live.ok) {
+        const message = `${kind}: cannot read live ${resource}: ${live.message}`;
+        if (mode === "block" && !allowEnvDrift) return { warnings, digests, error: { name: "env-live-read", message } };
+        warnings.push(`[warn] env drift check skipped ${message}`);
+        continue;
+      }
+      const liveDigests = live.values ? digestValues(digestKey, service.name, kind, live.values) : null;
+      const report = evaluateDrift(digests[kind], liveDigests, this.state.getEnvBaseline(service.name, kind));
+      for (const w of report.warnings) warnings.push(`[warn] ${kind}: ${w}`);
+      if (!report.blocked.length) continue;
+      const message = `${kind}: changed in the cluster outside hyper and would be reverted: ${report.blocked.join(", ")}`;
+      if (mode === "block" && !allowEnvDrift) return { warnings, digests, error: { name: "env-drift", message } };
+      warnings.push(`[warn] env drift ${allowEnvDrift ? "overridden" : "detected"} ${message}`);
+    }
+    return { warnings, digests };
+  }
+
+  private recordEnvBaseline(service: string, kind: EnvKind, digests: EnvDigests, deploymentId: number, warnings: string[]): void {
+    try {
+      this.state.setEnvBaseline(service, kind, digests, deploymentId);
+    } catch (e) {
+      warnings.push(`[warn] ${kind}: env baseline not recorded: ${(e as Error).message}`);
+    }
   }
 
   /** Commit the live tag. When a fencing token is given (P0.7 worker path), a stale token is a
@@ -339,7 +365,7 @@ export class Deployer {
       ok("apply-namespace");
     }
 
-    const env = await this.syncEnv(service, service.namespace, k8s, allowEnvDrift);
+    const env = await this.syncEnv(service, service.namespace, k8s, allowEnvDrift, id);
     for (const s of env.steps) steps.push(s);
     for (const w of env.warnings) warnings.push(w);
     if (env.error) return fail(env.error.name, env.error.message);
@@ -387,15 +413,7 @@ export class Deployer {
       ok(`apply-${f}`);
     }
 
-    if (service.healthGate) {
-      const result = await runHealthGate(this.healthSample(k8s, service, "Deployment", service.name), service.healthGate, this.clock);
-      this.state.setHealthGateResult(id, JSON.stringify(result));
-      if (!result.ok) return fail("health-gate", result.lastReason);
-      ok("health-gate", `${result.attempts} attempts — ${result.lastReason}`);
-    }
-
     this.applyCurrent(service.name, tag, fencingToken);
-    this.recordEnvBaseline(service.name, env.digests, id);
     this.state.updateDeployment(id, "done", warnings.length ? warnings.join(" · ") : undefined);
     log.info("deploy.done", { service: service.name, tag });
     return { deploymentId: id, ok: true, steps };
@@ -460,7 +478,7 @@ export class Deployer {
     }
 
     this.state.updateDeployment(id, "applying");
-    const env = await this.syncEnv(service, service.namespace, k8s, allowEnvDrift);
+    const env = await this.syncEnv(service, service.namespace, k8s, allowEnvDrift, id);
     for (const s of env.steps) steps.push(s);
     for (const w of env.warnings) warnings.push(w);
     if (env.error) return fail(env.error.name, env.error.message);
@@ -476,7 +494,6 @@ export class Deployer {
     ok("apply-manifests", k8sDir);
 
     this.applyCurrent(service.name, sha, fencingToken);
-    this.recordEnvBaseline(service.name, env.digests, id);
     const base = `git-sync ${service.gitRef} @ ${sha.slice(0, 12)}`;
     this.state.updateDeployment(id, "done", warnings.length ? `${base} · ${warnings.join(" · ")}` : base);
     log.info("deploy.done", { service: service.name, ref: service.gitRef, sha });
@@ -490,9 +507,9 @@ export class Deployer {
   }
 
   /** Build the health-gate sampler: reads workload status + per-pod restart/waiting state. */
-  private healthSample(k8s: K8sLike, service: ServiceModel, workloadKind: string, workload: string): () => Promise<HealthGateSample> {
+  private healthSample(k8s: K8sLike, service: RegistryPullService, workload: string): () => Promise<HealthGateSample> {
     return async () => {
-      const wl = await k8s.getWorkloadJson(workloadKind, workload, service.namespace);
+      const wl = await k8s.getWorkloadJson(service.workloadKind, workload, service.namespace);
       // Surface a read failure as a thrown error (the gate records it in lastReason) rather than
       // defaulting to 0 replicas, which is indistinguishable from a real scale-to-zero.
       if (wl.code !== 0) throw new Error(`workload read failed: ${(wl.stderr || wl.stdout).trim().slice(0, 120)}`);
@@ -502,7 +519,7 @@ export class Deployer {
       } catch (e) {
         throw new Error(`workload read returned non-JSON: ${(e as Error).message}`);
       }
-      const selector = (await k8s.getWorkloadSelector(workloadKind, workload, service.namespace)) ?? `app=${service.name}`;
+      const selector = (await k8s.getWorkloadSelector(service.workloadKind, workload, service.namespace)) ?? `app=${service.name}`;
       let pods: ClusterPod[] = [];
       try {
         pods = await k8s.listPods(service.namespace, selector);
@@ -584,7 +601,7 @@ export class Deployer {
     // Steady-state health gate (P1.8): rollout-status returns when pods come up, but not always
     // after they've served stably. The gate only promotes `current_deployment` once health holds.
     if (service.healthGate) {
-      const result = await runHealthGate(this.healthSample(k8s, service, service.workloadKind, workload), service.healthGate, this.clock);
+      const result = await runHealthGate(this.healthSample(k8s, service, workload), service.healthGate, this.clock);
       this.state.setHealthGateResult(id, JSON.stringify(result));
       if (!result.ok) return fail("health-gate", result.lastReason);
       ok("health-gate", `${result.attempts} attempts — ${result.lastReason}`);
@@ -673,7 +690,7 @@ export class Deployer {
     ok("bluegreen-rollout", `${greenName} ready`);
     // Gate the green deployment's steady-state health BEFORE flipping traffic to it.
     if (service.healthGate) {
-      const result = await runHealthGate(this.healthSample(k8s, service, service.workloadKind, greenName), service.healthGate, this.clock);
+      const result = await runHealthGate(this.healthSample(k8s, service, greenName), service.healthGate, this.clock);
       this.state.setHealthGateResult(id, JSON.stringify(result));
       if (!result.ok) {
         await k8s.deleteWorkload("Deployment", greenName, service.namespace).catch(() => {});

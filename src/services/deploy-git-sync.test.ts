@@ -130,15 +130,18 @@ describe("Deployer env guard", () => {
 
   function cluster() {
     const live: Record<string, Record<string, string>> = {};
+    let failManifests = false;
+    let liveReadError: string | null = null;
     const toFileData = (file: string) => Object.fromEntries(
       readFileSync(file, "utf8").split("\n").filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
     );
     const k8s = {
       runtime: "docker",
-      applyFile: async () => OK,
+      applyFile: async () => (failManifests ? { code: 1, stdout: "", stderr: "apply failed" } : OK),
       upsertConfigMapFromEnvFile: async (name: string, file: string) => ((live[name] = toFileData(file)), OK),
       upsertSecretFromEnvFile: async (name: string, file: string) => ((live[name] = toFileData(file)), OK),
       kubectl: async (args: string[]) => {
+        if (liveReadError) return { code: 1, stdout: "", stderr: liveReadError };
         const kind = args[3]!;
         const name = args[4]!;
         const data = live[name];
@@ -147,7 +150,11 @@ describe("Deployer env guard", () => {
         return { code: 0, stdout: JSON.stringify({ data: encoded }), stderr: "" };
       },
     };
-    return { k8s, live };
+    const controls = {
+      failManifests: (value: boolean) => { failManifests = value; },
+      failLiveRead: (message: string | null) => { liveReadError = message; },
+    };
+    return { k8s, live, controls };
   }
 
   function setup(mode: "warn" | "block") {
@@ -159,15 +166,16 @@ describe("Deployer env guard", () => {
       mkdirSync(join(envDir, "site"), { recursive: true });
       writeFileSync(join(envDir, "site", `${kind}.env`), content);
     };
-    const { k8s, live } = cluster();
+    const { k8s, live, controls } = cluster();
     const pool = { getOrThrow: () => k8s, get: () => k8s } as never;
-    const cfg = { workDir, envFilesDir: envDir, stateDir: join(workDir, "state"), envGuard: mode, git: { hostAllowlist: ["github.com"], keysDir: "/etc/celeste-hyper/git-keys" } } as never;
+    const stateDir = join(workDir, "state");
+    const cfg = { workDir, envFilesDir: envDir, stateDir, envGuard: mode, git: { hostAllowlist: ["github.com"], keysDir: "/etc/celeste-hyper/git-keys" } } as never;
     const deployer = new Deployer(cfg, {} as never, pool, state, clock, fakeGit());
     const deploy = (allowEnvDrift = false) => {
       const id = state.recordDeploymentStart("site", "main");
       return deployer.deployExisting({ service: svc(), tag: "main", allowEnvDrift }, id);
     };
-    return { state, live, writeEnv, deploy };
+    return { state, live, writeEnv, deploy, controls, stateDir };
   }
 
   it("records the baseline on success and blocks a redeploy that would revert a cluster edit", async () => {
@@ -235,5 +243,45 @@ describe("Deployer env guard", () => {
     const res = await deploy();
     expect(res.ok).toBe(true);
     expect(latestMessage(state)).toContain("no applied baseline; values differ from the cluster: DB_NAME");
+  });
+
+  it("records the baseline as soon as the env is applied, even when the manifests fail", async () => {
+    const { state, writeEnv, deploy, controls } = setup("block");
+    writeEnv("config", "DB_NAME=prod\n");
+    writeEnv("secret", "");
+    controls.failManifests(true);
+    expect((await deploy()).ok).toBe(false);
+    expect(Object.keys(state.getEnvBaseline("site", "config")!)).toEqual(["DB_NAME"]);
+
+    controls.failManifests(false);
+    writeEnv("config", "DB_NAME=reverted\n");
+    expect((await deploy()).ok).toBe(true);
+  });
+
+  it("reports a live read failure as a retryable step in block mode and only warns in warn mode", async () => {
+    const blocking = setup("block");
+    blocking.writeEnv("config", "DB_NAME=prod\n");
+    blocking.writeEnv("secret", "");
+    blocking.controls.failLiveRead("Unable to connect to the server");
+    const res = await blocking.deploy();
+    expect(res.ok).toBe(false);
+    expect(res.steps.find((s) => !s.ok)?.name).toBe("env-live-read");
+
+    const warning = setup("warn");
+    warning.writeEnv("config", "DB_NAME=prod\n");
+    warning.writeEnv("secret", "");
+    warning.controls.failLiveRead("Unable to connect to the server");
+    expect((await warning.deploy()).ok).toBe(true);
+    expect(latestMessage(warning.state)).toContain("env drift check skipped");
+  });
+
+  it("keeps deploying in warn mode when the guard itself throws", async () => {
+    const { state, live, writeEnv, deploy, stateDir } = setup("warn");
+    writeFileSync(stateDir, "not a directory");
+    writeEnv("config", "DB_NAME=prod\n");
+    writeEnv("secret", "");
+    expect((await deploy()).ok).toBe(true);
+    expect(live["site-config"]!.DB_NAME).toBe("prod");
+    expect(latestMessage(state)).toContain("[warn] env guard failed");
   });
 });

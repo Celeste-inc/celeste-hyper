@@ -41,10 +41,7 @@ describe("upsert*FromEnvFile", () => {
 
   class CapturingK8s extends K8s {
     manifests: string[] = [];
-    calls: string[][] = [];
-    override kubectl(args: string[], stdin?: string): Promise<RunResult> {
-      this.calls.push(args);
-      if (stdin === undefined) return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    override kubectl(_args: string[], stdin?: string): Promise<RunResult> {
       this.manifests.push(stdin ?? "");
       return Promise.resolve({ code: 0, stdout: "", stderr: "" });
     }
@@ -102,17 +99,6 @@ describe("upsert*FromEnvFile", () => {
     expect(c.manifests[0]).toContain("kind: Secret");
     expect(c.manifests[0]).toContain("stringData:");
     expect(c.manifests[0]).toContain('BIND_CREDENTIAL: "p@ss=word,x"');
-  });
-
-  it("applies env objects server-side and strips the plaintext last-applied annotation from secrets", async () => {
-    const file = envFileWith([{ key: "PASSWORD", value: "s3cr3t" }]);
-    const c = k8s();
-    await c.upsertConfigMapFromEnvFile("demo-config", file, "demo-ns");
-    await c.upsertSecretFromEnvFile("demo-secret", file, "demo-ns");
-    const applies = c.calls.filter((args) => args.includes("apply"));
-    expect(applies).toHaveLength(2);
-    for (const args of applies) expect(args).toEqual(["-n", "demo-ns", "apply", "--server-side", "--field-manager=celeste-hyper", "--force-conflicts", "-f", "-"]);
-    expect(c.calls.at(-1)).toEqual(["-n", "demo-ns", "annotate", "secret", "demo-secret", "kubectl.kubernetes.io/last-applied-configuration-"]);
   });
 
   it("fails without calling kubectl when the file is missing", async () => {

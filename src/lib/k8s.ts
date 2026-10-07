@@ -23,9 +23,6 @@ export interface RunResult {
   stderr: string;
 }
 
-const SERVER_SIDE_APPLY = ["apply", "--server-side", "--field-manager=celeste-hyper", "--force-conflicts", "-f", "-"];
-const LAST_APPLIED_ANNOTATION = "kubectl.kubernetes.io/last-applied-configuration";
-
 /**
  * Read an env-file into ConfigMap/Secret `data`, using the same parser that wrote it.
  *
@@ -145,10 +142,7 @@ export class K8s implements K8sLike {
       // stringData: the API server base64-encodes it, so we never hand-encode.
       stringData: data.value,
     });
-    const applied = await this.kubectl(["-n", namespace, ...SERVER_SIDE_APPLY], manifest);
-    if (applied.code !== 0) return applied;
-    const stripped = await this.kubectl(["-n", namespace, "annotate", "secret", name, `${LAST_APPLIED_ANNOTATION}-`]);
-    return stripped.code === 0 ? applied : stripped;
+    return this.kubectl(["-n", namespace, "apply", "-f", "-"], manifest);
   }
 
   async upsertConfigMapFromEnvFile(name: string, file: string, namespace: string): Promise<RunResult> {
@@ -160,7 +154,7 @@ export class K8s implements K8sLike {
       metadata: { name, namespace },
       data: data.value,
     });
-    return this.kubectl(["-n", namespace, ...SERVER_SIDE_APPLY], manifest);
+    return this.kubectl(["-n", namespace, "apply", "-f", "-"], manifest);
   }
 
   async rolloutStatus(kind: string, name: string, namespace: string, timeoutSec: number): Promise<RunResult> {

@@ -21,10 +21,16 @@ export function crossKindDuplicates(config: EnvValues, secret: EnvValues): strin
   return Object.keys(config).filter((key) => Object.hasOwn(secret, key)).sort();
 }
 
+function decodeDigestKey(raw: string): Buffer {
+  const key = Buffer.from(raw.trim(), "hex");
+  if (key.length !== 32) throw new Error(`${DIGEST_KEY_FILE} must hold 32 hex-encoded bytes`);
+  return key;
+}
+
 export function loadDigestKey(stateDir: string): Buffer {
   const file = join(stateDir, DIGEST_KEY_FILE);
   try {
-    return Buffer.from(readFileSync(file, "utf8").trim(), "hex");
+    return decodeDigestKey(readFileSync(file, "utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -35,7 +41,7 @@ export function loadDigestKey(stateDir: string): Buffer {
     return key;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    return Buffer.from(readFileSync(file, "utf8").trim(), "hex");
+    return decodeDigestKey(readFileSync(file, "utf8"));
   }
 }
 
