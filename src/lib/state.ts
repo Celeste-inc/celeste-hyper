@@ -146,6 +146,25 @@ export class State {
     return r ?? null;
   }
 
+  getEnvBaseline(service: string, kind: "config" | "secret"): Record<string, string> | null {
+    const rows = this.db
+      .query("SELECT key, digest FROM env_applied_hashes WHERE service = ? AND kind = ?")
+      .all(service, kind) as { key: string; digest: string }[];
+    if (rows.length === 0) return null;
+    return Object.fromEntries(rows.map((r) => [r.key, r.digest]));
+  }
+
+  setEnvBaseline(service: string, kind: "config" | "secret", digests: Record<string, string>, deploymentId: number): void {
+    const now = new Date(this.clock.now()).toISOString();
+    const insert = this.db.prepare(
+      "INSERT INTO env_applied_hashes (service, kind, key, digest, deployment_id, applied_at) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    this.db.transaction(() => {
+      this.db.run("DELETE FROM env_applied_hashes WHERE service = ? AND kind = ?", [service, kind]);
+      for (const [key, digest] of Object.entries(digests)) insert.run(service, kind, key, digest, deploymentId, now);
+    })();
+  }
+
   /** Record the steady-state health-gate outcome (JSON) for a deployment (P1.8). */
   setHealthGateResult(id: number, resultJson: string): void {
     this.db.run("UPDATE deployments SET health_gate_result = ? WHERE id = ?", [resultJson, id]);

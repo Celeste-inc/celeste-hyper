@@ -19,7 +19,10 @@ export interface DeployHandlerDeps {
 
 interface DeployPayload {
   tag: string;
+  allowEnvDrift?: boolean;
 }
+
+const TERMINAL_STEPS = ["env-drift", "env-duplicate-keys"];
 
 export const DEPLOY_JOB_KIND = "deploy";
 export const AUTO_ROLLBACK_GRACE_MS = 10_000;
@@ -33,7 +36,7 @@ export const AUTO_ROLLBACK_GRACE_MS = 10_000;
  */
 export function makeDeployHandler(deps: DeployHandlerDeps): JobHandler {
   return async (job: JobRow): Promise<void> => {
-    const { tag } = JSON.parse(job.payload) as DeployPayload;
+    const { tag, allowEnvDrift } = JSON.parse(job.payload) as DeployPayload;
     const svc = deps.registry.get(job.resource_id);
     if (!svc) throw new Error(`service '${job.resource_id}' not found`);
     deps.state.ensureDeploymentRow(job.id, svc.name, tag);
@@ -46,10 +49,15 @@ export function makeDeployHandler(deps: DeployHandlerDeps): JobHandler {
       log.warn("deploy-blocked-degraded", { service: svc.name, tag });
       throw new Error("service-degraded");
     }
-    const result = await deps.deployer.deployExisting({ service: svc, tag }, job.id, job.fencing_token);
+    const result = await deps.deployer.deployExisting({ service: svc, tag, allowEnvDrift: allowEnvDrift === true }, job.id, job.fencing_token);
     if (result.ok) return;
 
     const failedStep = result.steps.find((s) => !s.ok);
+    if (failedStep && TERMINAL_STEPS.includes(failedStep.name)) {
+      deps.queue?.noRetry(job.id);
+      log.warn("deploy-blocked-env-guard", { service: svc.name, tag, step: failedStep.name });
+      throw new Error(failedStep.message ?? failedStep.name);
+    }
     const gateFailed = result.steps.some((s) => !s.ok && s.name.includes("health-gate"));
     if (gateFailed && svc.sourceType === "registry-pull" && svc.autoRollback && deps.queue && deps.pool) {
       log.warn("deploy-failed-gate", { service: svc.name, tag, reason: failedStep?.message });

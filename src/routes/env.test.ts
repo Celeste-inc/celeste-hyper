@@ -141,3 +141,34 @@ describe("env routes", () => {
     expect((await call(app, "GET", "/api/services/hello/env/config")).body.keys).toEqual(["A"]);
   });
 });
+
+describe("env routes cross-kind duplicates", () => {
+  function appWithGuard(mode: "warn" | "block") {
+    const deps = makeFakeDeps({ envFilesDir: envDir() });
+    (deps.cfg as { envGuard: string }).envGuard = mode;
+    seedCluster(deps);
+    seedRegistryService(deps);
+    return buildApp(deps);
+  }
+
+  it("rejects a key already defined in the other env file in block mode", async () => {
+    const app = appWithGuard("block");
+    expect((await call(app, "PUT", "/api/services/hello/env/config", { content: "DB_NAME=prod\nLOG_LEVEL=info\n" })).status).toBe(200);
+    const rows = await call(app, "PUT", "/api/services/hello/env/secret/rows", { rows: [{ key: "DB_NAME", value: "x" }, { key: "PASSWORD", value: "y" }] });
+    expect(rows.status).toBe(409);
+    expect(rows.body).toEqual({ error: "key-in-other-kind", keys: ["DB_NAME"] });
+    const raw = await call(app, "PUT", "/api/services/hello/env/secret", { content: "LOG_LEVEL=debug\n" });
+    expect(raw.status).toBe(409);
+    expect(raw.body).toEqual({ error: "key-in-other-kind", keys: ["LOG_LEVEL"] });
+    const ok = await call(app, "PUT", "/api/services/hello/env/secret/rows", { rows: [{ key: "PASSWORD", value: "y" }] });
+    expect(ok.status).toBe(200);
+  });
+
+  it("accepts and reports duplicates in warn mode", async () => {
+    const app = appWithGuard("warn");
+    await call(app, "PUT", "/api/services/hello/env/config", { content: "DB_NAME=prod\n" });
+    const r = await call(app, "PUT", "/api/services/hello/env/secret/rows", { rows: [{ key: "DB_NAME", value: "x" }] });
+    expect(r.status).toBe(200);
+    expect(r.body.duplicateKeys).toEqual(["DB_NAME"]);
+  });
+});

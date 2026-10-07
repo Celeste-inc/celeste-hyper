@@ -14,6 +14,7 @@ import auditEvents from "./0013-audit-events.sql" with { type: "text" };
 import execTokens from "./0014-exec-tokens.sql" with { type: "text" };
 import clusterVersion from "./0015-cluster-version.sql" with { type: "text" };
 import enrollmentTokens from "./0016-enrollment-tokens.sql" with { type: "text" };
+import envAppliedHashes from "./0017-env-applied-hashes.sql" with { type: "text" };
 import type { RawMigration } from "../migrations.ts";
 
 /**
@@ -39,6 +40,7 @@ export const MIGRATIONS: RawMigration[] = [
   { version: "0014-exec-tokens", sql: execTokens },
   { version: "0015-cluster-version", sql: clusterVersion },
   { version: "0016-enrollment-tokens", sql: enrollmentTokens },
+  { version: "0017-env-applied-hashes", sql: envAppliedHashes },
 ];
 
 /** Highest schema version this binary knows; used for downgrade protection. */

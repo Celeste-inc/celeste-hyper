@@ -18,7 +18,8 @@ const BLUE_GREEN_DRAIN_SEC = 30;
 // projected into the Job's pod env — visible via `kubectl get -o yaml` and possibly an apiserver
 // audit log — so a short TTL means an audit-logged URL is a dead credential within minutes.
 const REMOTE_IMPORT_URL_TTL_SEC = 15 * 60;
-import { pathFor, write as writeEnvFile } from "../lib/env-files.ts";
+import { parseRows, pathFor, write as writeEnvFile } from "../lib/env-files.ts";
+import { crossKindDuplicates, digestValues, evaluateDrift, loadDigestKey, readLiveEnv, type EnvDigests, type EnvKind, type EnvValues } from "./env-guard.ts";
 import type { K8sPool } from "./k8s-pool.ts";
 import type { K8sLike } from "../lib/k8s-port.ts";
 import { type Clock, realClock } from "../lib/clock.ts";
@@ -86,6 +87,7 @@ export function forceNamespace(manifest: string): string {
 export interface DeployRequest {
   service: ServiceModel;
   tag: string;
+  allowEnvDrift?: boolean;
 }
 
 export interface DeployStep {
@@ -118,10 +120,10 @@ export class Deployer {
   async deployExisting(req: DeployRequest, id: number, fencingToken?: number): Promise<DeployResult> {
     try {
       if (req.service.sourceType === "r2-bundle") {
-        return await this.deployR2Bundle(id, req.service, req.tag, fencingToken);
+        return await this.deployR2Bundle(id, req.service, req.tag, fencingToken, req.allowEnvDrift ?? false);
       }
       if (req.service.sourceType === "git-sync") {
-        return await this.deployGitSync(id, req.service, fencingToken);
+        return await this.deployGitSync(id, req.service, fencingToken, req.allowEnvDrift ?? false);
       }
       return await this.deployRegistryPull(id, req.service, req.tag, fencingToken);
     } catch (e) {
@@ -161,28 +163,102 @@ export class Deployer {
     service: ServiceModel,
     namespace: string,
     k8s: K8sLike,
+    allowEnvDrift = false,
+    deploymentId = 0,
   ): Promise<{ steps: DeployStep[]; warnings: string[]; error?: { name: string; message: string } }> {
     const steps: DeployStep[] = [];
     const warnings: string[] = [];
-    const kinds: { kind: "config" | "secret"; resource: string }[] = [
+    const kinds: { kind: EnvKind; resource: string }[] = [
       { kind: "config", resource: `${service.name}-config` },
       { kind: "secret", resource: `${service.name}-secret` },
     ];
+    const autoCreated = new Set<EnvKind>();
+    const values: Record<EnvKind, EnvValues> = { config: {}, secret: {} };
     for (const { kind, resource } of kinds) {
       const file = pathFor(this.cfg.envFilesDir, service.name, kind);
-      let autoCreated = false;
       if (!existsSync(file)) {
         await writeEnvFile(this.cfg.envFilesDir, service.name, kind, "");
-        autoCreated = true;
+        autoCreated.add(kind);
         warnings.push(`[warn] ${kind}.env not set — created empty ${resource}`);
       }
+      try {
+        values[kind] = Object.fromEntries(parseRows(await readFile(file, "utf8")).map((row) => [row.key, row.value]));
+      } catch (e) {
+        return { steps, warnings, error: { name: `apply-${kind}`, message: `invalid env file ${file}: ${(e as Error).message}` } };
+      }
+    }
+
+    const mode = this.cfg.envGuard ?? "off";
+    let digests: Record<EnvKind, EnvDigests> | undefined;
+    if (mode !== "off") {
+      try {
+        const guard = await this.guardEnv(service, namespace, k8s, kinds, values, mode, allowEnvDrift);
+        for (const w of guard.warnings) warnings.push(w);
+        if (guard.error) return { steps, warnings, error: guard.error };
+        digests = guard.digests;
+      } catch (e) {
+        const message = `env guard failed: ${(e as Error).message}`;
+        if (mode === "block") return { steps, warnings, error: { name: "env-guard", message } };
+        warnings.push(`[warn] ${message}`);
+      }
+    }
+
+    for (const { kind, resource } of kinds) {
+      const file = pathFor(this.cfg.envFilesDir, service.name, kind);
       const r = kind === "config"
         ? await k8s.upsertConfigMapFromEnvFile(resource, file, namespace)
         : await k8s.upsertSecretFromEnvFile(resource, file, namespace);
       if (r.code !== 0) return { steps, warnings, error: { name: `apply-${kind}`, message: r.stderr || r.stdout } };
-      steps.push({ name: `apply-${kind}`, ok: true, message: autoCreated ? `${file} (auto-created empty)` : file });
+      steps.push({ name: `apply-${kind}`, ok: true, message: autoCreated.has(kind) ? `${file} (auto-created empty)` : file });
+      if (digests) this.recordEnvBaseline(service.name, kind, digests[kind], deploymentId, warnings);
     }
     return { steps, warnings };
+  }
+
+  private async guardEnv(
+    service: ServiceModel,
+    namespace: string,
+    k8s: K8sLike,
+    kinds: { kind: EnvKind; resource: string }[],
+    values: Record<EnvKind, EnvValues>,
+    mode: "warn" | "block",
+    allowEnvDrift: boolean,
+  ): Promise<{ warnings: string[]; digests: Record<EnvKind, EnvDigests>; error?: { name: string; message: string } }> {
+    const warnings: string[] = [];
+    const digests: Record<EnvKind, EnvDigests> = { config: {}, secret: {} };
+    const duplicates = crossKindDuplicates(values.config, values.secret);
+    if (duplicates.length) {
+      const message = `keys defined in both config.env and secret.env: ${duplicates.join(", ")}`;
+      if (mode === "block") return { warnings, digests, error: { name: "env-duplicate-keys", message } };
+      warnings.push(`[warn] ${message}`);
+    }
+    const digestKey = loadDigestKey(this.cfg.stateDir);
+    for (const { kind, resource } of kinds) {
+      digests[kind] = digestValues(digestKey, service.name, kind, values[kind]);
+      const live = await readLiveEnv(k8s, kind, resource, namespace);
+      if (!live.ok) {
+        const message = `${kind}: cannot read live ${resource}: ${live.message}`;
+        if (mode === "block" && !allowEnvDrift) return { warnings, digests, error: { name: "env-live-read", message } };
+        warnings.push(`[warn] env drift check skipped ${message}`);
+        continue;
+      }
+      const liveDigests = live.values ? digestValues(digestKey, service.name, kind, live.values) : null;
+      const report = evaluateDrift(digests[kind], liveDigests, this.state.getEnvBaseline(service.name, kind));
+      for (const w of report.warnings) warnings.push(`[warn] ${kind}: ${w}`);
+      if (!report.blocked.length) continue;
+      const message = `${kind}: changed in the cluster outside hyper and would be reverted: ${report.blocked.join(", ")}`;
+      if (mode === "block" && !allowEnvDrift) return { warnings, digests, error: { name: "env-drift", message } };
+      warnings.push(`[warn] env drift ${allowEnvDrift ? "overridden" : "detected"} ${message}`);
+    }
+    return { warnings, digests };
+  }
+
+  private recordEnvBaseline(service: string, kind: EnvKind, digests: EnvDigests, deploymentId: number, warnings: string[]): void {
+    try {
+      this.state.setEnvBaseline(service, kind, digests, deploymentId);
+    } catch (e) {
+      warnings.push(`[warn] ${kind}: env baseline not recorded: ${(e as Error).message}`);
+    }
   }
 
   /** Commit the live tag. When a fencing token is given (P0.7 worker path), a stale token is a
@@ -197,6 +273,7 @@ export class Deployer {
     service: R2BundleService,
     tag: string,
     fencingToken?: number,
+    allowEnvDrift = false,
   ): Promise<DeployResult> {
     const steps: DeployStep[] = [];
     const warnings: string[] = [];
@@ -288,7 +365,7 @@ export class Deployer {
       ok("apply-namespace");
     }
 
-    const env = await this.syncEnv(service, service.namespace, k8s);
+    const env = await this.syncEnv(service, service.namespace, k8s, allowEnvDrift, id);
     for (const s of env.steps) steps.push(s);
     for (const w of env.warnings) warnings.push(w);
     if (env.error) return fail(env.error.name, env.error.message);
@@ -347,7 +424,7 @@ export class Deployer {
    * HEAD sha, then run the same env-merge + `kubectl apply` pipeline as r2-bundle over `gitPath`. The
    * resolved sha becomes the current tag. URL/path/key are re-validated here (defense in depth).
    */
-  private async deployGitSync(id: number, service: GitSyncService, fencingToken?: number): Promise<DeployResult> {
+  private async deployGitSync(id: number, service: GitSyncService, fencingToken?: number, allowEnvDrift = false): Promise<DeployResult> {
     const steps: DeployStep[] = [];
     const warnings: string[] = [];
     const fail = (name: string, msg: string): DeployResult => {
@@ -401,7 +478,7 @@ export class Deployer {
     }
 
     this.state.updateDeployment(id, "applying");
-    const env = await this.syncEnv(service, service.namespace, k8s);
+    const env = await this.syncEnv(service, service.namespace, k8s, allowEnvDrift, id);
     for (const s of env.steps) steps.push(s);
     for (const w of env.warnings) warnings.push(w);
     if (env.error) return fail(env.error.name, env.error.message);

@@ -6,7 +6,7 @@ import { ROLLBACK_JOB_KIND, resolveRollbackTarget } from "../queue/handlers/roll
 import { preflightSetImage } from "../services/preflight.ts";
 import { deployEvents } from "./deploy-stream.ts";
 
-const DeployBody = z.object({ tag: z.string().min(1) });
+const DeployBody = z.object({ tag: z.string().min(1), allowEnvDrift: z.boolean().optional() });
 const R2_ROLLBACK_ERROR = "r2-bundle-uses-deploy-history";
 
 export const deploymentRoutes = (deps: ApiDeps) =>
@@ -29,7 +29,7 @@ export const deploymentRoutes = (deps: ApiDeps) =>
         if (degraded) return status(409, { error: "service-degraded", reason: degraded.reason, at: degraded.at });
         const parsed = DeployBody.safeParse(body ?? {});
         if (!parsed.success) return status(422, { error: "invalid body", issues: parsed.error.issues });
-        const tag = parsed.data.tag;
+        const { tag, allowEnvDrift } = parsed.data;
         // The deployment row is the id source; the job adopts that id (1:1 invariant) so the
         // legacy `/deployments/:id` is populated immediately (no 404 window) and the worker runs
         // the deploy under the per-service lock + fencing token.
@@ -39,7 +39,7 @@ export const deploymentRoutes = (deps: ApiDeps) =>
           kind: DEPLOY_JOB_KIND,
           resourceKind: "service",
           resourceId: svc.name,
-          payload: { tag },
+          payload: allowEnvDrift ? { tag, allowEnvDrift: true } : { tag },
         });
         return status(202, { deploymentId, accepted: true });
       },

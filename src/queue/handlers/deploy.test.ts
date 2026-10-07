@@ -115,3 +115,25 @@ describe("deploy job handler", () => {
     expect(job.last_error).toContain("timed out");
   });
 });
+
+describe("deploy job handler env guard", () => {
+  it("passes allowEnvDrift through and makes env guard failures terminal", async () => {
+    const { state, registry, queue } = setup();
+    let seenAllow: boolean | undefined;
+    const deployer = fakeDeployer(async (req, id) => {
+      seenAllow = req.allowEnvDrift;
+      return { deploymentId: id, ok: false, steps: [{ name: "env-drift", ok: false, message: "config: changed in the cluster outside hyper and would be reverted: DB" }] };
+    });
+    const noRetried: number[] = [];
+    const spyQueue = Object.assign(Object.create(Object.getPrototypeOf(queue)), queue, { noRetry: (id: number) => noRetried.push(id) });
+    const handler = makeDeployHandler({ state, registry, deployer, queue: spyQueue });
+
+    const depId = state.recordDeploymentStart("hello", "v1");
+    queue.enqueue({ id: depId, kind: DEPLOY_JOB_KIND, resourceKind: "service", resourceId: "hello", payload: { tag: "v1", allowEnvDrift: true } });
+    const job = queue.claim("w1")!;
+
+    await expect(handler(job)).rejects.toThrow("would be reverted: DB");
+    expect(seenAllow).toBe(true);
+    expect(noRetried).toEqual([depId]);
+  });
+});
