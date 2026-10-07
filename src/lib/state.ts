@@ -202,7 +202,7 @@ export class State {
   }
 
   pruneAlerts(olderThanIso: string): number {
-    return this.db.run("DELETE FROM alert_state WHERE last_seen < ? AND (open = 0 OR condition = 0)", [olderThanIso]).changes;
+    return this.db.run("DELETE FROM alert_state WHERE last_seen < ?", [olderThanIso]).changes;
   }
 
   getCursor(key: string): string | null {

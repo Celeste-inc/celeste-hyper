@@ -7,6 +7,7 @@ export interface AlertManagerOptions {
   environment: string;
   timeZone: string;
   cooldownSec: number;
+  resolveAfterSec: number;
   maxPerCycle: number;
   store: AlertStore;
   now?: () => Date;
@@ -32,6 +33,7 @@ export class AlertManager {
   private pending: Alert[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private chain: Promise<unknown> = Promise.resolve();
+  private flushing = false;
 
   constructor(private readonly opts: AlertManagerOptions) {}
 
@@ -40,13 +42,28 @@ export class AlertManager {
   }
 
   enqueue(alert: Alert): void {
+    if (this.pending.length >= 500) return;
     this.pending.push(alert);
+    this.scheduleFlush(2000);
+  }
+
+  private scheduleFlush(ms: number): void {
     if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
+      if (this.flushing) {
+        this.scheduleFlush(2000);
+        return;
+      }
       const batch = this.pending.splice(0);
-      void this.runCycle(batch, null);
-    }, 2000);
+      if (!batch.length) return;
+      this.flushing = true;
+      this.runCycle(batch, null)
+        .catch((e) => log.warn("alerts.flush_failed", { error: (e as Error).message }))
+        .finally(() => {
+          this.flushing = false;
+        });
+    }, ms);
   }
 
   async stop(): Promise<void> {
@@ -144,6 +161,7 @@ export class AlertManager {
     if (scannedScopes) {
       for (const open of this.opts.store.openConditions()) {
         if (seenConditions.has(open.key) || !scannedScopes.has(open.scope)) continue;
+        if (now.getTime() - new Date(open.lastSeen).getTime() < this.opts.resolveAfterSec * 1000) continue;
         const closed = { ...open, open: false };
         if (!open.lastSent) {
           this.opts.store.saveAlert(closed);

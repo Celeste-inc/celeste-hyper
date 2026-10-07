@@ -13,7 +13,7 @@ class MemoryStore implements AlertStore {
   pruneAlerts() { return 0; }
 }
 
-function setup(opts: { status?: number; maxPerCycle?: number } = {}) {
+function setup(opts: { status?: number; maxPerCycle?: number; resolveAfterSec?: number } = {}) {
   const store = new MemoryStore();
   const posts: { text: string; blocks: { type: string; text?: { text: string } }[] }[] = [];
   let now = new Date("2026-10-07T20:00:00Z");
@@ -27,6 +27,7 @@ function setup(opts: { status?: number; maxPerCycle?: number } = {}) {
     environment: "prod",
     timeZone: "America/Sao_Paulo",
     cooldownSec: 600,
+    resolveAfterSec: opts.resolveAfterSec ?? 0,
     maxPerCycle: opts.maxPerCycle ?? 10,
     store,
     now: () => now,
@@ -87,6 +88,26 @@ describe("AlertManager", () => {
     await manager.runCycle([cond], new Set(["local/sollo-prod"]));
     expect(posts).toHaveLength(3);
     expect(posts[2]!.text).toContain("ERRO");
+  });
+
+  it("waits for the resolve grace period before declaring a condition resolved", async () => {
+    const { posts, manager, advance } = setup({ resolveAfterSec: 180 });
+    const cond = alert({ key: "c2", category: "pod-crashloop", condition: true });
+    await manager.runCycle([cond], new Set(["local/sollo-prod"]));
+    advance(60);
+    await manager.runCycle([], new Set(["local/sollo-prod"]));
+    expect(posts).toHaveLength(1);
+    advance(200);
+    await manager.runCycle([], new Set(["local/sollo-prod"]));
+    expect(posts).toHaveLength(2);
+  });
+
+  it("keeps long, HTML-heavy details inside Slack's section limit", async () => {
+    const { posts, manager } = setup();
+    await manager.runCycle([alert({ detail: "<module>&".repeat(800) })], null);
+    const section = posts[0]!.blocks.find((b) => b.type === "section" && b.text?.text.startsWith("```"));
+    expect(section!.text!.text.length).toBeLessThanOrEqual(3000);
+    expect(section!.text!.text.endsWith("(truncado)```")).toBe(true);
   });
 
   it("caps messages per cycle and summarises the rest by severity", async () => {

@@ -29,6 +29,8 @@ describe("evaluatePods", () => {
     expect(crash.alerts.map((a) => [a.category, a.severity, a.condition])).toEqual([["pod-crashloop", "critical", true]]);
     const oom = evaluatePods([pod({ restartCount: 3, lastReason: "OOMKilled" })], new Map([["sollo-prod/sollo-api-6bbc74667c-hbql6/app", 2]]), NOW, 300, "local");
     expect(oom.alerts.map((a) => a.category)).toEqual(["pod-oom"]);
+    const again = evaluatePods([pod({ restartCount: 4, lastReason: "OOMKilled" })], new Map([["sollo-prod/sollo-api-6bbc74667c-hbql6/app", 3]]), NOW, 300, "local");
+    expect(again.alerts[0]!.key).toBe(oom.alerts[0]!.key);
   });
 
   it("does not alert on the first observation of restarts and flags pods not ready past the grace period", () => {
@@ -55,7 +57,7 @@ describe("AlertWatcher", () => {
     const k8s = {
       kubectl: async (args: string[]) => {
         calls.push(args);
-        if (args[0] === "-n" && args[1] === "broken") return { code: 1, stdout: "", stderr: "forbidden" };
+        if (args[args.indexOf("-n") + 1] === "broken") return { code: 1, stdout: "", stderr: "forbidden" };
         if (args.includes("pods")) return { code: 0, stdout: JSON.stringify({ items: [pod({ waiting: "CrashLoopBackOff", restartCount: 2 })] }), stderr: "" };
         if (args.includes("events")) return { code: 0, stdout: JSON.stringify({ items: [{ type: "Warning", reason: "Unhealthy", message: "Readiness probe failed", involvedObject: { kind: "Pod", name: "sollo-api-6bbc74667c-hbql6" }, lastTimestamp: "2026-10-07T19:59:30Z" }] }), stderr: "" };
         if (args.includes("logs")) return { code: 0, stdout: "2026-10-07T19:59:40.000000001Z {\"level\":\"error\",\"event\":\"api.unhandled_error\",\"path\":\"/v1/x\"}\n", stderr: "" };

@@ -41,6 +41,7 @@ export function createAlerting(deps: { cfg: Config; state: State; registry: Regi
     environment: cfg.environment,
     timeZone: cfg.timeZone,
     cooldownSec: cfg.cooldownSec,
+    resolveAfterSec: Math.max(cfg.intervalSec * 3, 180),
     maxPerCycle: cfg.maxPerCycle,
     store: deps.state,
   });
@@ -134,8 +135,8 @@ export function createAlerting(deps: { cfg: Config; state: State; registry: Regi
     },
     async stop() {
       setLogSink(null);
-      await watcher.stop();
-      await manager.stop();
+      const bounded = Promise.all([watcher.stop(), manager.stop()]);
+      await Promise.race([bounded, new Promise((resolve) => setTimeout(resolve, 8000))]);
     },
   };
 }

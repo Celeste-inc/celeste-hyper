@@ -51,7 +51,17 @@ const ConfigSchema = z.object({
       enabled: z.boolean().default(true),
       slackWebhookUrl: z.string().url().regex(/^https:\/\/hooks\.slack\.com\//).optional(),
       environment: z.string().min(1).default("prod"),
-      timeZone: z.string().default("America/Sao_Paulo"),
+      timeZone: z
+        .string()
+        .default("America/Sao_Paulo")
+        .refine((tz) => {
+          try {
+            new Intl.DateTimeFormat("pt-BR", { timeZone: tz });
+            return true;
+          } catch {
+            return false;
+          }
+        }, "invalid IANA time zone"),
       intervalSec: z.number().int().min(15).max(3600).default(60),
       cooldownSec: z.number().int().min(60).default(1800),
       maxPerCycle: z.number().int().min(1).max(50).default(12),

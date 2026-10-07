@@ -27,6 +27,17 @@ export interface AlertWatcherOptions {
 }
 
 const CRITICAL_LEVELS = new Set(["critical", "crit", "fatal", "emerg", "emergency", "alert", "panic"]);
+const KUBECTL_TIMEOUT = "--request-timeout=20s";
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} excedeu ${Math.round(ms / 1000)}s`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 function firstLine(text: string): string {
   return text.split("\n", 1)[0]!.slice(0, 160);
@@ -58,6 +69,14 @@ export class AlertWatcher {
     if (this.running) await this.running;
   }
 
+  private freshCursor(cursor: string | null, now: Date): string {
+    const floor = new Date(now.getTime() - this.opts.intervalSec * 2000);
+    if (!cursor) return floor.toISOString();
+    const parsed = new Date(cursor);
+    if (Number.isNaN(parsed.getTime()) || now.getTime() - parsed.getTime() > this.opts.intervalSec * 10_000) return floor.toISOString();
+    return cursor;
+  }
+
   private schedule(ms: number): void {
     if (this.stopped) return;
     this.timer = setTimeout(() => {
@@ -81,7 +100,7 @@ export class AlertWatcher {
       const k8s = this.opts.k8s(target.clusterId);
       if (!k8s) continue;
       try {
-        alerts.push(...(await this.scanNamespace(k8s, target)));
+        alerts.push(...(await withTimeout(this.scanNamespace(k8s, target), this.opts.intervalSec * 2000, `varredura de ${target.namespace}`)));
         scanned.add(scope);
       } catch (e) {
         alerts.push({
@@ -106,7 +125,7 @@ export class AlertWatcher {
   private async scanNamespace(k8s: K8sLike, target: WatchTarget): Promise<Alert[]> {
     const { clusterId, namespace } = target;
     const now = this.now();
-    const podsRes = await k8s.kubectl(["-n", namespace, "get", "pods", "-o", "json"]);
+    const podsRes = await k8s.kubectl([KUBECTL_TIMEOUT, "-n", namespace, "get", "pods", "-o", "json"]);
     if (podsRes.code !== 0) throw new Error(`kubectl get pods: ${(podsRes.stderr || podsRes.stdout).trim().slice(0, 300)}`);
     const pods = (JSON.parse(podsRes.stdout) as { items?: RawPodStatus[] }).items ?? [];
     const prior = new Map<string, number>();
@@ -127,10 +146,10 @@ export class AlertWatcher {
     }
 
     if (this.opts.events) {
-      const evRes = await k8s.kubectl(["-n", namespace, "get", "events", "-o", "json"]);
+      const evRes = await k8s.kubectl([KUBECTL_TIMEOUT, "-n", namespace, "get", "events", "-o", "json"]);
       if (evRes.code === 0) {
         const cursorKey = `events:${clusterId}/${namespace}`;
-        const since = this.opts.cursors.getCursor(cursorKey) ?? new Date(now.getTime() - this.opts.intervalSec * 2000).toISOString();
+        const since = this.freshCursor(this.opts.cursors.getCursor(cursorKey), now);
         const items = (JSON.parse(evRes.stdout) as { items?: RawEventItem[] }).items ?? [];
         const byPod = new Map(pods.map((p) => [p.metadata?.name ?? "", serviceOf(p)]));
         const ev = evaluateEvents(items, since, clusterId, namespace, (kind, name) => (kind === "Pod" && byPod.get(name)) || name.replace(/-[a-z0-9]{8,10}(-[a-z0-9]{5})?$/, ""));
@@ -149,22 +168,24 @@ export class AlertWatcher {
           if (!container) continue;
           const cursorKey = `logs:${clusterId}/${namespace}/${name}/${container}`;
           const cursor = this.opts.cursors.getCursor(cursorKey);
-          const since = cursor ?? new Date(now.getTime() - this.opts.intervalSec * 2000).toISOString();
+          const since = this.freshCursor(cursor, now);
           const findings: LogFinding[] = [];
           const restarts = cs.restartCount ?? 0;
           const prevKey = `prev:${clusterId}/${namespace}/${name}/${container}`;
           const crashWaiting = Boolean(cs.state?.waiting) && restarts > 0;
           if ((restartedNow.has(`${name}/${container}`) || crashWaiting) && this.opts.cursors.getCursor(prevKey) !== String(restarts)) {
-            const prev = await k8s.kubectl(["-n", namespace, "logs", name, "-c", container, "--previous", "--timestamps", "--tail=300"]);
+            const prev = await k8s.kubectl([KUBECTL_TIMEOUT, "-n", namespace, "logs", name, "-c", container, "--previous", "--timestamps", "--tail=300"]);
             if (prev.code === 0) findings.push(...scanLogLines(prev.stdout.split("\n"), null).findings.slice(-this.opts.maxFindingsPerContainer));
             this.opts.cursors.setCursor(prevKey, String(restarts));
           }
           if (cs.state?.running || cs.state?.terminated) {
-            const res = await k8s.kubectl(["-n", namespace, "logs", name, "-c", container, "--timestamps", `--since-time=${since}`, `--limit-bytes=${this.opts.maxLogBytes}`]);
+            const res = await k8s.kubectl([KUBECTL_TIMEOUT, "-n", namespace, "logs", name, "-c", container, "--timestamps", `--since-time=${since}`, `--limit-bytes=${this.opts.maxLogBytes}`]);
             if (res.code === 0) {
               const scan = scanLogLines(res.stdout.split("\n"), since);
               findings.push(...scan.findings.slice(-this.opts.maxFindingsPerContainer));
-              this.opts.cursors.setCursor(cursorKey, scan.lastTimestamp ?? since);
+              const truncated = Buffer.byteLength(res.stdout) >= this.opts.maxLogBytes * 0.98;
+              if (truncated) log.warn("alerts.log_backlog_skipped", { namespace, pod: name, container });
+              this.opts.cursors.setCursor(cursorKey, truncated ? now.toISOString() : scan.lastTimestamp ?? since);
             }
           }
           for (const f of findings) {

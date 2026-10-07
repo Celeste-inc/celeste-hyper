@@ -98,7 +98,7 @@ export function evaluatePods(
         alerts.push({
           ...base,
           container,
-          key: fingerprint("oom", cluster, namespace, service, container, String(restartCount)),
+          key: fingerprint("oom", cluster, namespace, service, container),
           severity: "critical",
           category: "pod-oom",
           title: "Container reiniciado por falta de memória (OOMKilled)",
@@ -110,7 +110,7 @@ export function evaluatePods(
         alerts.push({
           ...base,
           container,
-          key: fingerprint("restart", cluster, namespace, service, container, String(restartCount)),
+          key: fingerprint("restart", cluster, namespace, service, container),
           severity: "error",
           category: "pod-restart",
           title: `Container reiniciou (${restartCount - previous!} vez(es) desde a última verificação)`,

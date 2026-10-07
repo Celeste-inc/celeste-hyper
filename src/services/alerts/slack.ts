@@ -42,8 +42,10 @@ function escape(text: string): string {
 }
 
 function code(text: string): string {
-  const clipped = text.length > MAX_CODE ? `${text.slice(0, MAX_CODE)}\n… (truncado)` : text;
-  return "```" + escape(clipped).replace(/```/g, "'''") + "```";
+  const escaped = escape(text).replace(/```/g, "'''");
+  if (escaped.length <= MAX_CODE) return "```" + escaped + "```";
+  const cut = escaped.slice(0, MAX_CODE).replace(/&[a-z]*$/, "");
+  return "```" + cut + "\n… (truncado)```";
 }
 
 export function formatTime(iso: string, timeZone: string): string {
@@ -78,7 +80,7 @@ export function buildAlertMessage(
   fields.push(`*Primeira ocorrência*\n${formatTime(ctx.firstSeen, ctx.timeZone)}`);
   const blocks: Record<string, unknown>[] = [
     { type: "header", text: { type: "plain_text", text: `${sev.emoji} ${sev.label} · ${alert.service}`.slice(0, 150), emoji: true } },
-    { type: "section", text: { type: "mrkdwn", text: `*${escape(alert.title).slice(0, 2900)}*` } },
+    { type: "section", text: { type: "mrkdwn", text: `*${escape(alert.title.slice(0, 600))}*` } },
     { type: "section", fields: fields.slice(0, 10).map((text) => ({ type: "mrkdwn", text })) },
   ];
   if (alert.detail.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: code(alert.detail) } });
@@ -102,7 +104,7 @@ export function buildResolvedMessage(
     text: `RESOLVIDO · ${record.service} · ${record.title}`.slice(0, 300),
     blocks: [
       { type: "header", text: { type: "plain_text", text: `:white_check_mark: RESOLVIDO · ${record.service}`.slice(0, 150), emoji: true } },
-      { type: "section", text: { type: "mrkdwn", text: `*${escape(record.title)}*\nAtivo desde ${formatTime(record.firstSeen, ctx.timeZone)} · ${record.total} verificação(ões) com problema` } },
+      { type: "section", text: { type: "mrkdwn", text: `*${escape(record.title.slice(0, 600))}*\nAtivo desde ${formatTime(record.firstSeen, ctx.timeZone)} · ${record.total} verificação(ões) com problema` } },
       { type: "context", elements: [{ type: "mrkdwn", text: `${tags} · resolvido em ${formatTime(ctx.resolvedAt, ctx.timeZone)} · id ${record.key.slice(0, 12)}` }] },
       { type: "divider" },
     ],
@@ -110,7 +112,7 @@ export function buildResolvedMessage(
 }
 
 export function buildOverflowMessage(dropped: Alert[], ctx: { environment: string; timeZone: string; now: string }): SlackMessage {
-  const lines = dropped.slice(0, 25).map((a) => `• ${SEVERITY[a.severity].emoji} *${escape(a.service)}* · ${escape(a.title).slice(0, 150)}`);
+  const lines = dropped.slice(0, 25).map((a) => `• ${SEVERITY[a.severity].emoji} *${escape(a.service)}* · ${escape(a.title.slice(0, 100))}`);
   if (dropped.length > 25) lines.push(`… e mais ${dropped.length - 25}`);
   return {
     text: `${dropped.length} alerta(s) adicionais agrupados`,
@@ -131,13 +133,13 @@ export async function postToSlack(
   opts: { fetch?: FetchLike; maxAttempts?: number; timeoutMs?: number; delay?: (ms: number) => Promise<void> } = {},
 ): Promise<SlackSendResult> {
   const doFetch = opts.fetch ?? (fetch as unknown as FetchLike);
-  const maxAttempts = opts.maxAttempts ?? 4;
+  const maxAttempts = opts.maxAttempts ?? 3;
   const delay = opts.delay ?? sleep;
   let status = 0;
   let error: string | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 10_000);
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 8_000);
     try {
       const res = await doFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(message), signal: controller.signal });
       status = res.status;

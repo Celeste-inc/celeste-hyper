@@ -166,9 +166,9 @@ app.listen({ hostname: cfg.listen.host, port: cfg.listen.port }, (server) => {
 const shutdown = async (sig: string) => {
   log.info("shutdown", { signal: sig });
   poller.stop(); // no new auto-deploy enqueues
-  await alerting?.stop();
   await app.stop(); // stop accepting + abort in-flight requests (SSE generators kill their kubectl child)
   const drained = await worker.stop(); // stop claiming; wait (bounded) for the running job
+  await alerting?.stop();
   if (drained) {
     state.close();
   } else {

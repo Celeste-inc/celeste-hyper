@@ -68,9 +68,12 @@ describe("redact", () => {
       "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig",
       '{"api_key":"sk-proj-ABCDEFGHIJKLMNOP"}',
       "https://hooks.slack.com/services/T0/B0/xyz",
+      "jwt=eyJhbGciOi.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+      "Cookie: session=abc123; theme=dark",
+      "aws AKIAIOSFODNN7EXAMPLE",
     ].join("\n");
     const out = redact(text);
-    for (const secret of ["hunter2", "abc.def", "s3cr3t", "eyJhbGciOiJIUzI1NiJ9", "ABCDEFGHIJKLMNOP", "xyz"]) expect(out).not.toContain(secret);
+    for (const secret of ["hunter2", "abc.def", "s3cr3t", "eyJhbGciOiJIUzI1NiJ9", "ABCDEFGHIJKLMNOP", "xyz", "c2lnbmF0dXJl", "abc123", "IOSFODNN7EXAMPLE"]) expect(out).not.toContain(secret);
   });
 });
 
