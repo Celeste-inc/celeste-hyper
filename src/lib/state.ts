@@ -7,6 +7,41 @@ import { MIGRATIONS, BINARY_SCHEMA_VERSION } from "./migrations/index.ts";
 import { type Clock, realClock } from "./clock.ts";
 import { fencedSetCurrent } from "./lock.ts";
 import type { ServiceModel, ClusterModel } from "../services/model.ts";
+import type { AlertCategory, AlertRecord, AlertSeverity } from "../services/alerts/types.ts";
+
+interface AlertRow {
+  key: string;
+  severity: string;
+  category: string;
+  service: string;
+  title: string;
+  scope: string;
+  first_seen: string;
+  last_seen: string;
+  last_sent: string | null;
+  suppressed: number;
+  total: number;
+  open: number;
+  condition: number;
+}
+
+function toAlertRecord(r: AlertRow): AlertRecord {
+  return {
+    key: r.key,
+    severity: r.severity as AlertSeverity,
+    category: r.category as AlertCategory,
+    service: r.service,
+    title: r.title,
+    scope: r.scope,
+    firstSeen: r.first_seen,
+    lastSeen: r.last_seen,
+    lastSent: r.last_sent,
+    suppressed: r.suppressed,
+    total: r.total,
+    open: r.open === 1,
+    condition: r.condition === 1,
+  };
+}
 
 export type DeploymentStatus = "pending" | "downloading" | "loading" | "applying" | "done" | "failed" | "cancelled";
 
@@ -144,6 +179,46 @@ export class State {
       | { reason: string; at: string }
       | null;
     return r ?? null;
+  }
+
+  getAlert(key: string): AlertRecord | null {
+    const row = this.db.query("SELECT * FROM alert_state WHERE key = ?").get(key) as AlertRow | null;
+    return row ? toAlertRecord(row) : null;
+  }
+
+  saveAlert(r: AlertRecord): void {
+    this.db.run(
+      `INSERT INTO alert_state (key, severity, category, service, title, scope, first_seen, last_seen, last_sent, suppressed, total, open, condition)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET severity = excluded.severity, title = excluded.title, first_seen = excluded.first_seen,
+         last_seen = excluded.last_seen, last_sent = excluded.last_sent, suppressed = excluded.suppressed,
+         total = excluded.total, open = excluded.open, condition = excluded.condition`,
+      [r.key, r.severity, r.category, r.service, r.title, r.scope, r.firstSeen, r.lastSeen, r.lastSent, r.suppressed, r.total, r.open ? 1 : 0, r.condition ? 1 : 0],
+    );
+  }
+
+  openConditions(): AlertRecord[] {
+    return (this.db.query("SELECT * FROM alert_state WHERE open = 1 AND condition = 1").all() as AlertRow[]).map(toAlertRecord);
+  }
+
+  pruneAlerts(olderThanIso: string): number {
+    return this.db.run("DELETE FROM alert_state WHERE last_seen < ? AND (open = 0 OR condition = 0)", [olderThanIso]).changes;
+  }
+
+  getCursor(key: string): string | null {
+    const row = this.db.query("SELECT value FROM alert_cursors WHERE key = ?").get(key) as { value: string } | null;
+    return row?.value ?? null;
+  }
+
+  setCursor(key: string, value: string): void {
+    this.db.run(
+      "INSERT INTO alert_cursors (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+      [key, value, new Date(this.clock.now()).toISOString()],
+    );
+  }
+
+  pruneCursors(olderThanIso: string): number {
+    return this.db.run("DELETE FROM alert_cursors WHERE updated_at < ?", [olderThanIso]).changes;
   }
 
   getEnvBaseline(service: string, kind: "config" | "secret"): Record<string, string> | null {

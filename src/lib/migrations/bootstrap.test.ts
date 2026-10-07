@@ -23,8 +23,9 @@ describe("embedded migrations", () => {
       "0015-cluster-version",
       "0016-enrollment-tokens",
       "0017-env-applied-hashes",
+      "0018-alerts",
     ]);
-    expect(BINARY_SCHEMA_VERSION).toBe(17);
+    expect(BINARY_SCHEMA_VERSION).toBe(18);
   });
 
   it("applies the embedded migrations and creates the documented schema", () => {

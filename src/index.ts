@@ -52,6 +52,7 @@ import { effectiveR2Config, R2SourceStore } from "./services/r2-settings.ts";
 import { RegistrySourceStore } from "./services/registry-sources.ts";
 import { makeHelmUpgradeHandler, HELM_UPGRADE_JOB_KIND } from "./queue/handlers/helm-upgrade.ts";
 import { buildApp } from "./routes/_app.ts";
+import { createAlerting } from "./services/alerts/index.ts";
 import { log } from "./lib/logger.ts";
 import { MigrationError } from "./lib/migrations.ts";
 import { realClock } from "./lib/clock.ts";
@@ -128,6 +129,7 @@ const git = new Git();
 const deployer = new Deployer(cfg, r2Sources, pool, state, clock, git);
 const helm = new Helm(pool);
 const queue = new Queue(state, clock);
+const alerting = createAlerting({ cfg, state, registry, pool });
 const worker = new Worker({
   queue,
   handlers: {
@@ -136,12 +138,14 @@ const worker = new Worker({
     [HELM_UPGRADE_JOB_KIND]: makeHelmUpgradeHandler({ state, registry, helm, pool }),
   },
   clock,
-  audit: (job, result, message) =>
+  audit: (job, result, message) => {
     recordAudit(
       state,
       { actor: "system", action: `job:${job.kind}`, resourceKind: "service", resourceId: job.resource_id, result, message: message ?? null },
       clock.now(),
-    ),
+    );
+    alerting?.onJobOutcome(job, result, message);
+  },
 });
 const capabilities = new CapabilityService({ state, pool, clock });
 capabilities.refreshHost(); // host CLIs don't change at runtime; probe once at boot
@@ -153,6 +157,7 @@ const app = buildApp({ cfg, registry, clusters, pool, state, deployer, r2, r2Sou
 
 poller.start();
 worker.start();
+alerting?.start();
 
 app.listen({ hostname: cfg.listen.host, port: cfg.listen.port }, (server) => {
   log.info("listening", { url: `http://${server.hostname}:${server.port}` });
@@ -161,6 +166,7 @@ app.listen({ hostname: cfg.listen.host, port: cfg.listen.port }, (server) => {
 const shutdown = async (sig: string) => {
   log.info("shutdown", { signal: sig });
   poller.stop(); // no new auto-deploy enqueues
+  await alerting?.stop();
   await app.stop(); // stop accepting + abort in-flight requests (SSE generators kill their kubectl child)
   const drained = await worker.stop(); // stop claiming; wait (bounded) for the running job
   if (drained) {
