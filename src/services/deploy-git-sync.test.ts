@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { State } from "../lib/state.ts";
@@ -121,5 +121,119 @@ describe("Deployer git-sync", () => {
     const res = await makeDeployer(state, clock, k8s, fakeGit({ materialize: false }), workDir).deployExisting({ service: svc(), tag: "main" }, id);
     expect(res.ok).toBe(false);
     expect(res.steps.find((s) => !s.ok)?.name).toBe("manifests");
+  });
+});
+
+describe("Deployer env guard", () => {
+  const latestMessage = (state: State) =>
+    [...state.recentDeployments("site")].sort((a, b) => b.id - a.id)[0]!.message;
+
+  function cluster() {
+    const live: Record<string, Record<string, string>> = {};
+    const toFileData = (file: string) => Object.fromEntries(
+      readFileSync(file, "utf8").split("\n").filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+    );
+    const k8s = {
+      runtime: "docker",
+      applyFile: async () => OK,
+      upsertConfigMapFromEnvFile: async (name: string, file: string) => ((live[name] = toFileData(file)), OK),
+      upsertSecretFromEnvFile: async (name: string, file: string) => ((live[name] = toFileData(file)), OK),
+      kubectl: async (args: string[]) => {
+        const kind = args[3]!;
+        const name = args[4]!;
+        const data = live[name];
+        if (!data) return { code: 1, stdout: "", stderr: `Error from server (NotFound): ${kind}s "${name}" not found` };
+        const encoded = kind === "secret" ? Object.fromEntries(Object.entries(data).map(([k, v]) => [k, Buffer.from(v).toString("base64")])) : data;
+        return { code: 0, stdout: JSON.stringify({ data: encoded }), stderr: "" };
+      },
+    };
+    return { k8s, live };
+  }
+
+  function setup(mode: "warn" | "block") {
+    const clock = fakeClock(0);
+    const state = new State(":memory:", clock);
+    const workDir = mkdtempSync(join(tmpdir(), "hyper-envguard-"));
+    const envDir = join(workDir, "env");
+    const writeEnv = (kind: "config" | "secret", content: string) => {
+      mkdirSync(join(envDir, "site"), { recursive: true });
+      writeFileSync(join(envDir, "site", `${kind}.env`), content);
+    };
+    const { k8s, live } = cluster();
+    const pool = { getOrThrow: () => k8s, get: () => k8s } as never;
+    const cfg = { workDir, envFilesDir: envDir, stateDir: join(workDir, "state"), envGuard: mode, git: { hostAllowlist: ["github.com"], keysDir: "/etc/celeste-hyper/git-keys" } } as never;
+    const deployer = new Deployer(cfg, {} as never, pool, state, clock, fakeGit());
+    const deploy = (allowEnvDrift = false) => {
+      const id = state.recordDeploymentStart("site", "main");
+      return deployer.deployExisting({ service: svc(), tag: "main", allowEnvDrift }, id);
+    };
+    return { state, live, writeEnv, deploy };
+  }
+
+  it("records the baseline on success and blocks a redeploy that would revert a cluster edit", async () => {
+    const { state, live, writeEnv, deploy } = setup("block");
+    writeEnv("config", "DB_NAME=prod\nSHARE=records\n");
+    writeEnv("secret", "PASSWORD=s3cr3t\n");
+    expect((await deploy()).ok).toBe(true);
+    expect(Object.keys(state.getEnvBaseline("site", "config")!).sort()).toEqual(["DB_NAME", "SHARE"]);
+    expect(JSON.stringify(state.getEnvBaseline("site", "secret"))).not.toContain("s3cr3t");
+
+    live["site-config"]!.SHARE = "records_hotfix";
+    const blocked = await deploy();
+    expect(blocked.ok).toBe(false);
+    const step = blocked.steps.find((s) => !s.ok)!;
+    expect(step.name).toBe("env-drift");
+    expect(step.message).toContain("SHARE");
+    expect(step.message).not.toContain("records_hotfix");
+    expect(live["site-config"]!.SHARE).toBe("records_hotfix");
+  });
+
+  it("allows a key intentionally changed through hyper", async () => {
+    const { live, writeEnv, deploy } = setup("block");
+    writeEnv("config", "DB_NAME=prod\n");
+    writeEnv("secret", "");
+    expect((await deploy()).ok).toBe(true);
+    live["site-config"]!.DB_NAME = "manual";
+    writeEnv("config", "DB_NAME=prod_v2\n");
+    expect((await deploy()).ok).toBe(true);
+    expect(live["site-config"]!.DB_NAME).toBe("prod_v2");
+  });
+
+  it("applies with an explicit override and records the warning", async () => {
+    const { state, live, writeEnv, deploy } = setup("block");
+    writeEnv("config", "DB_NAME=prod\n");
+    writeEnv("secret", "");
+    await deploy();
+    live["site-config"]!.DB_NAME = "manual";
+    const res = await deploy(true);
+    expect(res.ok).toBe(true);
+    expect(live["site-config"]!.DB_NAME).toBe("prod");
+    expect(latestMessage(state)).toContain("env drift overridden");
+  });
+
+  it("rejects keys duplicated across config and secret in block mode and only warns in warn mode", async () => {
+    const blocking = setup("block");
+    blocking.writeEnv("config", "DB_NAME=prod\n");
+    blocking.writeEnv("secret", "DB_NAME=other\nPASSWORD=x\n");
+    const res = await blocking.deploy();
+    expect(res.ok).toBe(false);
+    expect(res.steps.find((s) => !s.ok)).toMatchObject({ name: "env-duplicate-keys", message: "keys defined in both config.env and secret.env: DB_NAME" });
+    expect(blocking.live["site-config"]).toBeUndefined();
+
+    const warning = setup("warn");
+    warning.writeEnv("config", "DB_NAME=prod\n");
+    warning.writeEnv("secret", "DB_NAME=other\n");
+    expect((await warning.deploy()).ok).toBe(true);
+    expect(latestMessage(warning.state)).toContain("keys defined in both config.env and secret.env: DB_NAME");
+  });
+
+  it("only warns on the first guarded deploy when the cluster already differs", async () => {
+    const { state, live, writeEnv, deploy } = setup("block");
+    live["site-config"] = { DB_NAME: "prod" };
+    writeEnv("config", "DB_NAME=stale\n");
+    writeEnv("secret", "");
+    const res = await deploy();
+    expect(res.ok).toBe(true);
+    expect(latestMessage(state)).toContain("no applied baseline; values differ from the cluster: DB_NAME");
   });
 });

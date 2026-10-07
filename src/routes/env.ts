@@ -5,6 +5,7 @@ import * as envFiles from "../lib/env-files.ts";
 import { DEPLOY_JOB_KIND } from "../queue/handlers/deploy.ts";
 import type { ServiceModel } from "../services/model.ts";
 import { log } from "../lib/logger.ts";
+import { crossKindDuplicates } from "../services/env-guard.ts";
 
 const EnvBody = z.object({ content: z.string() });
 const RowsBody = z.object({
@@ -21,6 +22,12 @@ function safeParseStored(content: string): envFiles.EnvRow[] {
   } catch {
     return [];
   }
+}
+
+async function duplicatesWithOtherKind(deps: ApiDeps, service: string, kind: "config" | "secret", keys: string[]): Promise<string[]> {
+  const other = kind === "config" ? "secret" : "config";
+  const otherValues = Object.fromEntries(safeParseStored(await envFiles.read(deps.cfg.envFilesDir, service, other)).map((r) => [r.key, r.value]));
+  return crossKindDuplicates(Object.fromEntries(keys.map((key) => [key, ""])), otherValues);
 }
 
 /**
@@ -82,10 +89,14 @@ export const envRoutes = (deps: ApiDeps) =>
         if (kind !== "config" && kind !== "secret") return status(400, { error: "kind must be config|secret" });
         const parsed = EnvBody.safeParse(body ?? {});
         if (!parsed.success) return status(422, { error: "invalid body", issues: parsed.error.issues });
+        const duplicates = deps.cfg.envGuard === "off"
+          ? []
+          : await duplicatesWithOtherKind(deps, svc.name, kind, safeParseStored(parsed.data.content).map((r) => r.key));
+        if (duplicates.length && deps.cfg.envGuard === "block") return status(409, { error: "key-in-other-kind", keys: duplicates });
         await envFiles.write(deps.cfg.envFilesDir, svc.name, kind, parsed.data.content);
         log.info("api.env_updated", { service: svc.name, kind });
         enqueueAutoRedeploy(deps, svc, kind);
-        return { ok: true };
+        return duplicates.length ? { ok: true, duplicateKeys: duplicates } : { ok: true };
       },
       { detail: { summary: "Replace an env file from raw content (config|secret) — deprecated; use /rows", tags, deprecated: true } },
     )
@@ -100,6 +111,10 @@ export const envRoutes = (deps: ApiDeps) =>
         if (!parsed.success) return status(422, { error: "invalid body", issues: parsed.error.issues });
         const errors = envFiles.rowErrors(parsed.data.rows);
         if (errors.length) return status(422, { error: "invalid rows", issues: errors });
+        const duplicates = deps.cfg.envGuard === "off"
+          ? []
+          : await duplicatesWithOtherKind(deps, svc.name, kind, parsed.data.rows.map((r) => r.key));
+        if (duplicates.length && deps.cfg.envGuard === "block") return status(409, { error: "key-in-other-kind", keys: duplicates });
         let rows = parsed.data.rows;
         if (kind === "secret") {
           // Secret values never round-trip to the browser, so the editor sends blank values for
@@ -111,7 +126,7 @@ export const envRoutes = (deps: ApiDeps) =>
         await envFiles.write(deps.cfg.envFilesDir, svc.name, kind, content);
         log.info("api.env_updated", { service: svc.name, kind, rows: parsed.data.rows.length });
         enqueueAutoRedeploy(deps, svc, kind);
-        return { ok: true, stripped };
+        return duplicates.length ? { ok: true, stripped, duplicateKeys: duplicates } : { ok: true, stripped };
       },
       { detail: { summary: "Replace an env file from structured rows (config|secret)", tags } },
     );
