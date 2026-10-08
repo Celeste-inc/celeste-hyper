@@ -1,11 +1,29 @@
 import { createHash } from "node:crypto";
 
+export interface ErrorClassification {
+  code: string;
+  title?: string;
+  cause?: string;
+  action?: string;
+  component?: string;
+}
+
 export interface LogFinding {
   timestamp: string;
   level: string;
   message: string;
   detail: string;
   fingerprint: string;
+  classification?: ErrorClassification;
+}
+
+const CLASSIFICATION_KEYS = new Set(["error_code", "error_title", "probable_cause", "suggested_action", "component", "service"]);
+
+export function extractClassification(obj: Record<string, unknown>): ErrorClassification | undefined {
+  const code = typeof obj.error_code === "string" ? obj.error_code.trim() : "";
+  if (!/^[A-Z][A-Z0-9-]{2,80}$/.test(code)) return undefined;
+  const text = (k: string) => (typeof obj[k] === "string" && (obj[k] as string).trim() ? redact(obj[k] as string).slice(0, 400) : undefined);
+  return { code, title: text("error_title"), cause: text("probable_cause"), action: text("suggested_action"), component: text("component") };
 }
 
 const ANSI = /\u001b\[[0-9;]*m/g;
@@ -83,7 +101,7 @@ function pick(obj: Record<string, unknown>, keys: string[]): string | undefined 
   return undefined;
 }
 
-function parseJsonLine(body: string): { level: string; message: string; detail: string } | null {
+function parseJsonLine(body: string): { level: string; message: string; detail: string; classification?: ErrorClassification } | null {
   if (!body.startsWith("{")) return null;
   let obj: Record<string, unknown>;
   try {
@@ -93,38 +111,44 @@ function parseJsonLine(body: string): { level: string; message: string; detail: 
   }
   const level = (pick(obj, JSON_LEVEL_KEYS) ?? "").toLowerCase();
   if (!ERROR_LEVELS.has(level)) return null;
-  const message = pick(obj, JSON_MESSAGE_KEYS) ?? "error";
-  const detail = JSON_DETAIL_KEYS
-    .filter((k) => obj[k] !== undefined && obj[k] !== message)
+  const classification = extractClassification(obj);
+  const message = classification?.title ?? pick(obj, JSON_MESSAGE_KEYS) ?? "error";
+  const detailKeys = classification ? [...JSON_DETAIL_KEYS, "technical", "event", "job", "contact_id", "job_id", "path"] : JSON_DETAIL_KEYS;
+  const detail = [...new Set(detailKeys)]
+    .filter((k) => obj[k] !== undefined && obj[k] !== message && !CLASSIFICATION_KEYS.has(k))
     .map((k) => `${k}: ${typeof obj[k] === "string" ? obj[k] : JSON.stringify(obj[k])}`)
     .join("\n");
-  return { level, message, detail };
+  return { level, message, detail, classification };
 }
 
 const CRITICAL_META = /"severity"\s*:\s*"critical"/i;
 
 const WINSTON = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)? \[(\w+)\]: (.*?)(?: (\{.*\}))?$/;
 
-function parseTextLine(body: string): { level: string; message: string; detail: string } | null {
+function parseTextLine(body: string): { level: string; message: string; detail: string; classification?: ErrorClassification } | null {
   for (const { level, re } of TEXT_PATTERNS) {
     if (!re.test(body)) continue;
     const resolved = CRITICAL_META.test(body) ? "critical" : level;
     const w = WINSTON.exec(body);
-    if (w) return { level: resolved, message: w[2] || body, detail: w[3] ? prettyMeta(w[3]) : "" };
-    return { level: resolved, message: body, detail: "" };
+    if (!w) return { level: resolved, message: body, detail: "" };
+    const meta = w[3] ? parseMeta(w[3]) : null;
+    if (!meta) return { level: resolved, message: w[2] || body, detail: w[3] ?? "" };
+    const classification = extractClassification(meta);
+    const detail = Object.entries(meta)
+      .filter(([k]) => !CLASSIFICATION_KEYS.has(k) && k !== "severity")
+      .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+      .join("\n");
+    return { level: resolved, message: w[2] || body, detail, classification };
   }
   return null;
 }
 
-function prettyMeta(raw: string): string {
+function parseMeta(raw: string): Record<string, unknown> | null {
   try {
-    const obj = JSON.parse(raw) as Record<string, unknown>;
-    return Object.entries(obj)
-      .filter(([k]) => k !== "service")
-      .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
-      .join("\n");
+    const obj = JSON.parse(raw) as unknown;
+    return obj && typeof obj === "object" && !Array.isArray(obj) ? (obj as Record<string, unknown>) : null;
   } catch {
-    return raw;
+    return null;
   }
 }
 
@@ -154,22 +178,23 @@ export function scanLogLines(lines: string[], since: string | null): { findings:
     }
     const json = parseJsonLine(body);
     if (json) {
-      findings.push(makeFinding(timestamp, json.level, json.message, json.detail));
+      findings.push(makeFinding(timestamp, json.level, json.message, json.detail, json.classification));
       continue;
     }
     const text = parseTextLine(body);
-    if (text) findings.push(makeFinding(timestamp, text.level, text.message, text.detail));
+    if (text) findings.push(makeFinding(timestamp, text.level, text.message, text.detail, text.classification));
   }
   return { findings, lastTimestamp };
 }
 
-function makeFinding(timestamp: string, level: string, message: string, detail: string): LogFinding {
+function makeFinding(timestamp: string, level: string, message: string, detail: string, classification?: ErrorClassification): LogFinding {
   const cleanMessage = redact(message).slice(0, 500);
   return {
     timestamp,
     level,
     message: cleanMessage,
     detail: redact(detail).slice(0, MAX_DETAIL),
-    fingerprint: normalizeForFingerprint(cleanMessage),
+    fingerprint: classification ? `code:${classification.code}` : normalizeForFingerprint(cleanMessage),
+    classification,
   };
 }

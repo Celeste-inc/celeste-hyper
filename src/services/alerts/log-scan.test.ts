@@ -40,12 +40,26 @@ describe("scanLogLines", () => {
     expect(scanLogLines([line], "2026-10-08T15:00:01.438595584Z").findings).toEqual([]);
   });
 
+  it("reads the error catalog fields from winston metadata and structlog JSON", () => {
+    const winston = `${ts(1)} 2026-10-08 12:00:01 [\u001b[31merror\u001b[39m]: Login recusado no banco do TM {"service":"sollo-schedulers","error_code":"SCHED-TM-LOGIN","error_title":"Login recusado no banco do TM","probable_cause":"Senha do usuario do TM alterada","suggested_action":"Atualizar TELEMARKETING_DB_PASSWORD no Hyper","severity":"critical","job":"contactSync","technical":{"code":"ELOGIN"}}`;
+    const json = `${ts(2)} {"event":"extraction.job.failed","level":"error","error_code":"API-LLM-SCHEMA","error_title":"Schema rejeitado pela OpenAI","probable_cause":"Schema estrito invalido","suggested_action":"Revisar o schema enviado","job_id":7,"password":"x"}`;
+    const { findings } = scanLogLines([winston, json], null);
+    expect(findings[0]!.level).toBe("critical");
+    expect(findings[0]!.classification).toEqual({ code: "SCHED-TM-LOGIN", title: "Login recusado no banco do TM", cause: "Senha do usuario do TM alterada", action: "Atualizar TELEMARKETING_DB_PASSWORD no Hyper", component: undefined });
+    expect(findings[0]!.detail).toContain("job: contactSync");
+    expect(findings[0]!.detail).not.toContain("probable_cause");
+    expect(findings[0]!.fingerprint).toBe("code:SCHED-TM-LOGIN");
+    expect(findings[1]!.message).toBe("Schema rejeitado pela OpenAI");
+    expect(findings[1]!.classification!.code).toBe("API-LLM-SCHEMA");
+    expect(findings[1]!.detail).toContain("job_id: 7");
+  });
+
   it("promotes winston errors tagged with severity critical", () => {
     const line = `${ts(1)} 2026-10-07 18:00:00 [\u001b[31merror\u001b[39m]: Pipeline: TM de origem esta atras {"check":"tm_source_regressed","severity":"critical"}`;
     const [finding] = scanLogLines([line], null).findings;
     expect(finding!.level).toBe("critical");
     expect(finding!.message).toBe("Pipeline: TM de origem esta atras");
-    expect(finding!.detail).toBe("check: tm_source_regressed\nseverity: critical");
+    expect(finding!.detail).toBe("check: tm_source_regressed");
   });
 
   it("groups a python traceback into one finding", () => {

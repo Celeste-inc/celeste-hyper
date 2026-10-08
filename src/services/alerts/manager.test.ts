@@ -110,6 +110,15 @@ describe("AlertManager", () => {
     expect(section!.text!.text.endsWith("(truncado)```")).toBe(true);
   });
 
+  it("shows the error code, probable cause and suggested action", async () => {
+    const { posts, manager } = setup();
+    await manager.runCycle([alert({ errorCode: "SCHED-TM-LOGIN", probableCause: "Senha alterada", suggestedAction: "Atualizar a senha no Hyper" })], null);
+    const body = JSON.stringify(posts[0]);
+    expect(body).toContain("*Código:* `SCHED-TM-LOGIN`");
+    expect(body).toContain("*Causa provável:* Senha alterada");
+    expect(body).toContain("*Ação sugerida:* Atualizar a senha no Hyper");
+  });
+
   it("caps messages per cycle and summarises the rest by severity", async () => {
     const { posts, manager } = setup({ maxPerCycle: 2 });
     const many = [alert({ key: "a", severity: "error" }), alert({ key: "b", severity: "critical" }), alert({ key: "c" }), alert({ key: "d", severity: "warning" })];

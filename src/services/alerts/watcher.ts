@@ -199,8 +199,11 @@ export class AlertWatcher {
               container,
               cluster: clusterId,
               title: `Erro registrado em ${service}: ${firstLine(f.message)}`,
-              detail: [f.message, f.detail].filter(Boolean).join("\n\n"),
-              tags: ["log", f.level],
+              detail: [f.classification ? "" : f.message, f.detail].filter(Boolean).join("\n\n"),
+              tags: ["log", f.level, ...(f.classification ? [f.classification.code] : [])],
+              errorCode: f.classification?.code,
+              probableCause: f.classification?.cause,
+              suggestedAction: f.classification?.action,
               occurredAt: f.timestamp || now.toISOString(),
             });
           }
