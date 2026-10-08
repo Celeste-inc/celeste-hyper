@@ -46,6 +46,35 @@ const ConfigSchema = z.object({
   clustersDir: z.string().default("/etc/celeste-hyper/clusters"),
   workDir: z.string().default("/var/lib/celeste-hyper/work"),
   envGuard: z.enum(["off", "warn", "block"]).default("warn"),
+  alerts: z
+    .object({
+      enabled: z.boolean().default(true),
+      slackWebhookUrl: z.string().url().regex(/^https:\/\/hooks\.slack\.com\//).optional(),
+      environment: z.string().min(1).default("prod"),
+      timeZone: z
+        .string()
+        .default("America/Sao_Paulo")
+        .refine((tz) => {
+          try {
+            new Intl.DateTimeFormat("pt-BR", { timeZone: tz });
+            return true;
+          } catch {
+            return false;
+          }
+        }, "invalid IANA time zone"),
+      intervalSec: z.number().int().min(15).max(3600).default(60),
+      cooldownSec: z.number().int().min(60).default(1800),
+      maxPerCycle: z.number().int().min(1).max(50).default(12),
+      notReadyGraceSec: z.number().int().min(30).default(300),
+      logs: z.boolean().default(true),
+      events: z.boolean().default(true),
+      maxLogBytes: z.number().int().min(10_000).default(2_000_000),
+      maxFindingsPerContainer: z.number().int().min(1).default(50),
+      namespaces: z.array(z.object({ clusterId: z.string().min(1), namespace: z.string().min(1) })).default([]),
+      ignore: z.array(z.string()).default([]),
+      retentionDays: z.number().int().min(1).default(30),
+    })
+    .prefault({}),
   // git-sync (P2.3). An empty `hostAllowlist` disables git-sync entirely (service create is refused).
   git: z
     .object({
@@ -81,6 +110,12 @@ function envOverride(cfg: unknown): unknown {
   if (Bun.env.HYPER_STATE_DIR) c.stateDir = Bun.env.HYPER_STATE_DIR;
   if (Bun.env.HYPER_ENV_FILES_DIR) c.envFilesDir = Bun.env.HYPER_ENV_FILES_DIR;
   if (Bun.env.HYPER_ENV_GUARD) c.envGuard = Bun.env.HYPER_ENV_GUARD;
+  if (Bun.env.HYPER_ALERTS_SLACK_WEBHOOK_URL || Bun.env.HYPER_ALERTS_ENVIRONMENT || Bun.env.HYPER_ALERTS_ENABLED) {
+    c.alerts = c.alerts ?? {};
+    if (Bun.env.HYPER_ALERTS_SLACK_WEBHOOK_URL) c.alerts.slackWebhookUrl = Bun.env.HYPER_ALERTS_SLACK_WEBHOOK_URL;
+    if (Bun.env.HYPER_ALERTS_ENVIRONMENT) c.alerts.environment = Bun.env.HYPER_ALERTS_ENVIRONMENT;
+    if (Bun.env.HYPER_ALERTS_ENABLED) c.alerts.enabled = Bun.env.HYPER_ALERTS_ENABLED !== "false";
+  }
   if (Bun.env.HYPER_CLUSTERS_DIR) c.clustersDir = Bun.env.HYPER_CLUSTERS_DIR;
   c.git = c.git ?? {};
   if (Bun.env.HYPER_GIT_HOST_ALLOWLIST !== undefined) {

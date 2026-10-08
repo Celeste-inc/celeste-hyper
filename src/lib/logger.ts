@@ -41,7 +41,21 @@ export function formatLine(format: LogFormat, record: Record_): string {
 
 const format = resolveLogFormat(Bun.argv, Bun.env);
 
+export type LogSink = (level: Level, event: string, fields: Record<string, unknown>) => void;
+let sink: LogSink | null = null;
+
+export function setLogSink(next: LogSink | null): void {
+  sink = next;
+}
+
 function emit(level: Level, event: string, fields: Record<string, unknown> = {}) {
+  if (sink && level === "error") {
+    try {
+      sink(level, event, fields);
+    } catch (e) {
+      process.stderr.write(JSON.stringify({ ts: new Date().toISOString(), level: "warn", event: "logger.sink_failed", error: (e as Error).message }) + "\n");
+    }
+  }
   if (LEVELS[level] < threshold) return;
   const line = formatLine(format, { ts: new Date().toISOString(), level, event, ...fields });
   if (level === "error" || level === "warn") {
