@@ -31,6 +31,15 @@ describe("scanLogLines", () => {
     ]);
   });
 
+  it("parses kubectl timestamps with a local offset and keeps the winston message clean", () => {
+    const line = "2026-10-08T12:00:01.438595584-03:00 2026-10-08 12:00:01 [\u001b[31merror\u001b[39m]: Pipeline: TM sem lancamentos novos ha mais de 72h {\"service\":\"sollo-schedulers\",\"check\":\"tm_source_stale\"}";
+    const { findings, lastTimestamp } = scanLogLines([line], null);
+    expect(findings[0]!.message).toBe("Pipeline: TM sem lancamentos novos ha mais de 72h");
+    expect(findings[0]!.timestamp).toBe("2026-10-08T15:00:01.438595584Z");
+    expect(lastTimestamp).toBe("2026-10-08T15:00:01.438595584Z");
+    expect(scanLogLines([line], "2026-10-08T15:00:01.438595584Z").findings).toEqual([]);
+  });
+
   it("promotes winston errors tagged with severity critical", () => {
     const line = `${ts(1)} 2026-10-07 18:00:00 [\u001b[31merror\u001b[39m]: Pipeline: TM de origem esta atras {"check":"tm_source_regressed","severity":"critical"}`;
     const [finding] = scanLogLines([line], null).findings;
@@ -86,5 +95,6 @@ describe("normalization", () => {
   it("pads timestamps to nanoseconds", () => {
     expect(normalizeTs("2026-10-07T20:00:01Z")).toBe("2026-10-07T20:00:01.000000000Z");
     expect(normalizeTs("2026-10-07T20:00:01.5Z")).toBe("2026-10-07T20:00:01.500000000Z");
+    expect(normalizeTs("2026-10-08T12:00:01.4385-03:00")).toBe("2026-10-08T15:00:01.438500000Z");
   });
 });

@@ -40,9 +40,9 @@ export function normalizeTs(ts: string): string {
   const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(ts);
   if (!m) return ts;
   if (m[3] !== "Z") {
-    const d = new Date(ts);
+    const d = new Date(`${m[1]}${m[3]}`);
     if (Number.isNaN(d.getTime())) return ts;
-    return normalizeTs(d.toISOString());
+    return `${d.toISOString().slice(0, 19)}.${(m[2] ?? "").padEnd(9, "0").slice(0, 9)}Z`;
   }
   return `${m[1]}.${(m[2] ?? "").padEnd(9, "0").slice(0, 9)}Z`;
 }
@@ -71,7 +71,7 @@ export function fingerprint(...parts: string[]): string {
 function splitTimestamp(line: string): { timestamp: string; body: string } {
   const space = line.indexOf(" ");
   const head = space > 0 ? line.slice(0, space) : "";
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(head)) return { timestamp: normalizeTs(head), body: line.slice(space + 1) };
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(head)) return { timestamp: normalizeTs(head), body: line.slice(space + 1) };
   return { timestamp: "", body: line };
 }
 
