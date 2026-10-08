@@ -45,6 +45,7 @@ const WAITING: Record<string, { category: AlertCategory; severity: AlertSeverity
 };
 
 const IGNORED_EVENT_REASONS = new Set(["Pulling", "Pulled", "Created", "Started", "Scheduled", "Killing", "SuccessfulCreate", "ScalingReplicaSet", "SuccessfulDelete"]);
+const STARTUP_EVENT_REASONS = new Set(["Unhealthy", "ProbeWarning"]);
 
 export function serviceOf(pod: RawPodStatus): string {
   const labels = pod.metadata?.labels ?? {};
@@ -142,7 +143,14 @@ function lastTermination(state: RawContainerState | undefined): string {
   return `última finalização: ${t.reason ?? "?"} (exit ${t.exitCode ?? "?"}${t.finishedAt ? ` em ${t.finishedAt}` : ""})`;
 }
 
-export function evaluateEvents(events: RawEventItem[], sinceIso: string | null, cluster: string, namespace: string, serviceForObject: (kind: string, name: string) => string): { alerts: Alert[]; lastTimestamp: string | null } {
+export function evaluateEvents(
+  events: RawEventItem[],
+  sinceIso: string | null,
+  cluster: string,
+  namespace: string,
+  serviceForObject: (kind: string, name: string) => string,
+  isStarting: (kind: string, name: string) => boolean = () => false,
+): { alerts: Alert[]; lastTimestamp: string | null } {
   const alerts: Alert[] = [];
   const since = sinceIso ? normalizeTs(sinceIso) : null;
   let lastTimestamp = since;
@@ -154,6 +162,7 @@ export function evaluateEvents(events: RawEventItem[], sinceIso: string | null, 
     if (e.type !== "Warning" || !e.reason || IGNORED_EVENT_REASONS.has(e.reason)) continue;
     const kind = e.involvedObject?.kind ?? "?";
     const object = e.involvedObject?.name ?? "?";
+    if (STARTUP_EVENT_REASONS.has(e.reason) && isStarting(kind, object)) continue;
     const service = serviceForObject(kind, object);
     const message = redact(e.message ?? "");
     alerts.push({

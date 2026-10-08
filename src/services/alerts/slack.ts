@@ -83,6 +83,12 @@ export function buildAlertMessage(
     { type: "section", text: { type: "mrkdwn", text: `*${escape(alert.title.slice(0, 600))}*` } },
     { type: "section", fields: fields.slice(0, 10).map((text) => ({ type: "mrkdwn", text })) },
   ];
+  const guidance = [
+    alert.errorCode ? `*Código:* \`${escape(alert.errorCode)}\`` : "",
+    alert.probableCause ? `*Causa provável:* ${escape(alert.probableCause)}` : "",
+    alert.suggestedAction ? `*Ação sugerida:* ${escape(alert.suggestedAction)}` : "",
+  ].filter(Boolean);
+  if (guidance.length) blocks.push({ type: "section", text: { type: "mrkdwn", text: guidance.join("\n").slice(0, 2900) } });
   if (alert.detail.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: code(alert.detail) } });
   blocks.push({
     type: "context",

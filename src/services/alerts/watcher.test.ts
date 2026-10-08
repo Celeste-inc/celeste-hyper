@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { AlertWatcher } from "./watcher.ts";
-import { evaluatePods, type RawPodStatus } from "./cluster-scan.ts";
+import { evaluateEvents, evaluatePods, type RawPodStatus } from "./cluster-scan.ts";
 import type { Alert } from "./types.ts";
 import { envWarnings } from "./index.ts";
 
@@ -8,7 +8,7 @@ const NOW = new Date("2026-10-07T20:00:00Z");
 
 function pod(over: { name?: string; restartCount?: number; waiting?: string; lastReason?: string; ready?: boolean; readySince?: string; app?: string } = {}): RawPodStatus {
   return {
-    metadata: { name: over.name ?? "sollo-api-6bbc74667c-hbql6", namespace: "sollo-prod", labels: { app: over.app ?? "sollo-api" } },
+    metadata: { name: over.name ?? "sollo-api-6bbc74667c-hbql6", namespace: "sollo-prod", labels: { app: over.app ?? "sollo-api" }, creationTimestamp: "2026-10-07T18:00:00Z" },
     status: {
       phase: "Running",
       conditions: [{ type: "Ready", status: over.ready === false ? "False" : "True", lastTransitionTime: over.readySince ?? "2026-10-07T19:00:00Z" }],
@@ -38,6 +38,16 @@ describe("evaluatePods", () => {
     const notReady = evaluatePods([pod({ ready: false, readySince: "2026-10-07T19:50:00Z" })], new Map(), NOW, 300, "local");
     expect(notReady.alerts.map((a) => a.category)).toEqual(["pod-not-ready"]);
     expect(evaluatePods([pod({ ready: false, readySince: "2026-10-07T19:58:00Z" })], new Map(), NOW, 300, "local").alerts).toEqual([]);
+  });
+});
+
+describe("evaluateEvents", () => {
+  it("ignores probe failures while a pod is starting and reports them afterwards", () => {
+    const event = { type: "Warning", reason: "Unhealthy", message: "Readiness probe failed", involvedObject: { kind: "Pod", name: "sollo-api-x" }, lastTimestamp: "2026-10-07T19:59:30Z" };
+    expect(evaluateEvents([event], null, "local", "sollo-prod", () => "sollo-api", () => true).alerts).toEqual([]);
+    expect(evaluateEvents([event], null, "local", "sollo-prod", () => "sollo-api", () => false).alerts.map((a) => a.title)).toEqual(["Evento do Kubernetes: Unhealthy"]);
+    const evicted = { ...event, reason: "Evicted", message: "low memory" };
+    expect(evaluateEvents([evicted], null, "local", "sollo-prod", () => "sollo-api", () => true).alerts).toHaveLength(1);
   });
 });
 

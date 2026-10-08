@@ -27,6 +27,9 @@ export interface Alert {
   cluster?: string;
   condition?: boolean;
   tags?: string[];
+  errorCode?: string;
+  probableCause?: string;
+  suggestedAction?: string;
   occurredAt: string;
 }
 
