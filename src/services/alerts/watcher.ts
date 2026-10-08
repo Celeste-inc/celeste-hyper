@@ -152,7 +152,14 @@ export class AlertWatcher {
         const since = this.freshCursor(this.opts.cursors.getCursor(cursorKey), now);
         const items = (JSON.parse(evRes.stdout) as { items?: RawEventItem[] }).items ?? [];
         const byPod = new Map(pods.map((p) => [p.metadata?.name ?? "", serviceOf(p)]));
-        const ev = evaluateEvents(items, since, clusterId, namespace, (kind, name) => (kind === "Pod" && byPod.get(name)) || name.replace(/-[a-z0-9]{8,10}(-[a-z0-9]{5})?$/, ""));
+        const createdAt = new Map(pods.map((p) => [p.metadata?.name ?? "", Date.parse(p.metadata?.creationTimestamp ?? "")]));
+        const starting = (kind: string, name: string) => {
+          if (kind !== "Pod") return false;
+          const created = createdAt.get(name);
+          if (created === undefined || Number.isNaN(created)) return true;
+          return now.getTime() - created < this.opts.notReadyGraceSec * 1000;
+        };
+        const ev = evaluateEvents(items, since, clusterId, namespace, (kind, name) => (kind === "Pod" && byPod.get(name)) || name.replace(/-[a-z0-9]{8,10}(-[a-z0-9]{5})?$/, ""), starting);
         alerts.push(...ev.alerts);
         if (ev.lastTimestamp) this.opts.cursors.setCursor(cursorKey, ev.lastTimestamp);
       }
